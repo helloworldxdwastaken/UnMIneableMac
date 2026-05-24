@@ -9,7 +9,12 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 // https://vitejs.dev/config/
-export default defineConfig(({ command }) => {
+//
+// NOTE on the @svelte-use/* alias: the upstream author had a sibling
+// `svelte-use` repo checked out and wanted dev mode to load the local
+// .mjs files instead of node_modules. We resolve from node_modules
+// unconditionally so a fresh clone works without the sibling repo.
+export default defineConfig(() => {
   const config: UserConfig = {
     root: 'client',
     build: {
@@ -25,18 +30,5 @@ export default defineConfig(({ command }) => {
       }),
     ],
   }
-
-  if (command !== 'build') {
-    config.resolve.alias = [
-      {
-        find: /^@svelte-use\/(.*)/,
-        replacement: path.resolve(
-          __dirname,
-          '../svelte-use/packages/$1/dist/index.mjs',
-        ),
-      },
-    ]
-  }
-
   return config
 })
