@@ -7,3 +7,4 @@ dist/
 verusminer/cpu/*.o
 verusminer/cpu/verusminer
 verusminer/cpu/verusminer_portable
+verusminer_gpu
