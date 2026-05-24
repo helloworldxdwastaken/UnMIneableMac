@@ -117,12 +117,27 @@ static void generate_cl_key_full(
 
 typedef uint64_t (*clhash_fn_t)(void*, const unsigned char[64], uint64_t, void**);
 
+// Benchmark variant — exercises Finalize2b in isolation (no Write chain).
+// Kept with extra_start=0 because benchmark prefills the entire 64-byte
+// scratch buffer and mutates 8 bytes near the start each iteration, so
+// the canonical FillExtra tiling pattern still applies cleanly.
 static void verus_hash_v2_finalize(
     unsigned char *curBuf, unsigned char *hashKey, int keysize,
     unsigned char result[32], clhash_fn_t clhash_fn, unsigned char *cached_seed)
 {
-    int extra_size = 32;
-    memcpy(curBuf + 32 + extra_size, curBuf, 32 - extra_size);
+    int extra_start = 0;  // benchmark assumes a fresh-state scratch buffer
+
+    // First FillExtra: tile curBuf[0..16] in 16-byte chunks → fills [32..64]
+    {
+        int pos = extra_start;
+        int left = 32 - pos;
+        while (left > 0) {
+            int len = left > 16 ? 16 : left;
+            memcpy(curBuf + 32 + pos, curBuf, len);
+            pos += len;
+            left -= len;
+        }
+    }
 
     if (cached_seed)
         generate_cl_key_cached(hashKey, curBuf, keysize, cached_seed);
@@ -132,7 +147,17 @@ static void verus_hash_v2_finalize(
     void *pMoveScratch[32];
     uint64_t intermediate = clhash_fn(hashKey, curBuf, KEYMASK, pMoveScratch);
 
-    memcpy(curBuf + 32 + extra_size, &intermediate, 8);
+    // Second FillExtra: tile &intermediate (8 bytes) across [32..64]
+    {
+        int pos = extra_start;
+        int left = 32 - pos;
+        while (left > 0) {
+            int len = left > 8 ? 8 : left;
+            memcpy(curBuf + 32 + pos, &intermediate, len);
+            pos += len;
+            left -= len;
+        }
+    }
 
     uint64_t offset128 = intermediate & (KEYMASK >> 4);
     haraka512_keyed(result, curBuf, (u128 *)(hashKey + (offset128 * 16)));
@@ -263,11 +288,26 @@ static void verus_hash_v2_full(
         }
     }
 
-    // Finalize2b
+    // Finalize2b — must match CVerusHashV2::Finalize2b's FillExtra() tiling
+    // EXACTLY. canonical FillExtra<T>(data) tiles `sizeof(T)` bytes from
+    // `data` across the [32+curPos .. 64] window, NOT a single linear copy.
+    //   - First call: T = u128 (16 bytes) sourced from curBuf[0..16]
+    //   - Second call: T = uint64_t (8 bytes) sourced from &intermediate
+    // A single memcpy is correct only when extra_room == sizeof(T); for
+    // any other size (e.g. 17 bytes for our 1487-byte hash input) the
+    // tiling pattern differs and produces a different final hash.
     int extra_start = (int)curPos;
-    int extra_room = 32 - extra_start;
-    if (extra_room > 0) {
-        memcpy(curBuf + 32 + extra_start, curBuf, extra_room);
+
+    // First FillExtra: tile curBuf[0..16] in 16-byte chunks
+    {
+        int pos = extra_start;
+        int left = 32 - pos;
+        while (left > 0) {
+            int len = left > 16 ? 16 : left;
+            memcpy(curBuf + 32 + pos, curBuf, len);
+            pos += len;
+            left -= len;
+        }
     }
 
     generate_cl_key_cached(hashKey, curBuf, keysize, cached_seed);
@@ -275,9 +315,16 @@ static void verus_hash_v2_full(
     void *pMoveScratch[32];
     uint64_t intermediate = verusclhash_sv2_2_neon(hashKey, curBuf, KEYMASK, pMoveScratch);
 
-    if (extra_room > 0) {
-        memcpy(curBuf + 32 + extra_start, &intermediate,
-               std::min((int)sizeof(intermediate), extra_room));
+    // Second FillExtra: tile &intermediate (8 bytes) across the same window
+    {
+        int pos = extra_start;
+        int left = 32 - pos;
+        while (left > 0) {
+            int len = left > 8 ? 8 : left;
+            memcpy(curBuf + 32 + pos, &intermediate, len);
+            pos += len;
+            left -= len;
+        }
     }
 
     uint64_t offset128 = intermediate & (KEYMASK >> 4);
