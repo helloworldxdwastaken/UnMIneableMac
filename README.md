@@ -50,7 +50,7 @@ The original app couldn't connect to the unMineable pool on M1+ machines, which 
 
 ## Install / run
 
-Download the latest `.app` from [Releases](https://github.com/helloworldxdwastaken/UnMIneableMac/releases) → quit any running macMineable → double-click to launch.
+Download the latest `.dmg` (or `.app.zip`) from [Releases](https://github.com/helloworldxdwastaken/UnminerMac/releases) → drag **UnminerMac** to your Applications folder → double-click to launch.
 
 If macOS Tahoe Gatekeeper blocks it: System Settings → Privacy & Security → "Open Anyway".
 
