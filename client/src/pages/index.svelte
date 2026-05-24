@@ -10,11 +10,7 @@
 <hgroup>
   <h1 class="text-sky-500">macMineable</h1>
   <h6 class="text-xs text-green-500">
-    3rd-party unMineable for macOS. Made by
-    <Link
-      url="https://github.com/helloworldxdwastaken"
-      class="underline hover:text-indigo-500">tokyo</Link
-    >.
+    3rd-party unMineable for macOS.
   </h6>
 </hgroup>
 
@@ -56,3 +52,11 @@
 <span class="hidden">
   <DarkModeSwitch />
 </span>
+
+<p class="text-[10px] text-gray-400 text-center mt-6 mb-0">
+  Built by
+  <Link
+    url="https://veroxstudio.com"
+    class="underline hover:text-sky-400">veroxstudio.com</Link
+  >
+</p>

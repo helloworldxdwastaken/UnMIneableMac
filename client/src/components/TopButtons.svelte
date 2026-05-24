@@ -12,7 +12,7 @@
     {
       component: IconGitHub,
       onClick: () => {
-        ipc.send('emitOpenURL', 'https://github.com/helloworldxdwastaken')
+        ipc.send('emitOpenURL', 'https://github.com/helloworldxdwastaken/UnMIneableMac')
       },
     },
     {
