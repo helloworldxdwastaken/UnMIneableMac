@@ -68,9 +68,21 @@ func KillMining() {
 	miningProcess = nil
 }
 
+// Verus address validation: must start with R, i, or zs1.
+// Does not validate checksums — pool will reject bad addresses.
+func isValidVerusAddress(addr string) bool {
+	if len(addr) < 34 {
+		return false
+	}
+	return strings.HasPrefix(addr, "R") ||
+		strings.HasPrefix(addr, "i") ||
+		strings.HasPrefix(addr, "zs1")
+}
+
 // client events
 func RegisterIPCEvents(w webview.WebView) {
 	minerPath := Ternay(IsIntel(), "assets/miner/xmrig", "assets/miner/xmrig-m1")
+	verusPath := "assets/miner/verusminer"
 
 	w.Bind("emitPageReady", func() {
 		fmt.Println("emitPageReady")
@@ -86,7 +98,7 @@ func RegisterIPCEvents(w webview.WebView) {
 	})
 
 	type Form struct {
-		Algorithm    string `json:"algorithm"` // "randomx" (xmrig→unMineable) | future: "verushash"
+		Algorithm    string `json:"algorithm"` // "randomx" | "verushash"
 		Symbol       string `json:"symbol"`
 		Address      string `json:"address"`
 		ReferralCode string `json:"referralCode"`
@@ -104,11 +116,9 @@ func RegisterIPCEvents(w webview.WebView) {
 			return
 		}
 
-		// Algorithm dispatch. Today only RandomX is implemented.
-		// VerusHash is a planned phase 1-5 deliverable (see /verusminer).
 		algo := strings.ToLower(strings.TrimSpace(form.Algorithm))
 		if algo == "" {
-			algo = "randomx" // backward compat with older UI builds
+			algo = "randomx"
 		}
 
 		switch algo {
@@ -128,9 +138,20 @@ func RegisterIPCEvents(w webview.WebView) {
 			miningProcess = process
 
 		case "verushash":
-			// Placeholder — phase 1-5 will land a real implementation.
-			// Until then, refuse cleanly so the UI can show a sensible message.
-			w.Eval(`onMiningStartedError("VerusHash backend is in development. Tracking in /verusminer/ — see research page on the website for the roadmap.")`)
+			addr := strings.TrimSpace(form.Address)
+			if !isValidVerusAddress(addr) {
+				w.Eval(`onMiningStartedError("Invalid Verus address. Must start with R, i, or zs1.")`)
+				return
+			}
+			process, err := RunCommand(
+				fmt.Sprintf(`%s mine %s`, verusPath, addr),
+			)
+			if err != nil {
+				w.Eval(fmt.Sprintf(`onMiningStartedError("%s")`, err))
+				return
+			}
+			w.Eval("onMiningStarted()")
+			miningProcess = process
 
 		default:
 			w.Eval(fmt.Sprintf(`onMiningStartedError("Unknown algorithm: %s")`, algo))

@@ -22,7 +22,7 @@
 
     const log = logs[logs.length - 1]
     hashrates.update((val) => {
-      const hs = getHashrate(log)
+      const hs = getHashrate(log, $form.algorithm)
       if (hs) {
         val.push(hs)
       }
@@ -87,7 +87,9 @@
   }
 
   tryOnMount(() => {
-    handleGetBalance()
+    if ($form.algorithm !== 'verushash') {
+      handleGetBalance()
+    }
   })
   tryOnDestroy(() => {
     $miningLogs.length = 0
@@ -113,59 +115,63 @@
         <h5 class="mb-1">Address</h5>
         <div class="flex items-center justify-between">
           <sl-tooltip placement="top" content={$form.address}>
-            <p
-              class="
-                text-gray-500 text-xs
-                m-0
-                break-all
-                overflow-ellipsis
-                whitespace-nowrap
-                overflow-hidden
-                mr-8
-              "
-            >
+            <p class="text-gray-500 text-xs m-0 break-all overflow-ellipsis whitespace-nowrap overflow-hidden mr-8">
               {$form.address}
             </p>
           </sl-tooltip>
 
-          <button
-            type="button"
-            class="glass-btn-ghost px-3 py-1 text-xs"
-            on:click={() =>
-              ipc.send(
-                'emitOpenURL',
-                `https://unmineable.com/coins/${$form.symbol}/address/${$form.address}`,
-              )}>Stats</button
-          >
+          {#if $form.algorithm === 'verushash'}
+            <button type="button" class="glass-btn-ghost px-3 py-1 text-xs"
+              on:click={() => ipc.send('emitOpenURL', `https://explorer.verus.io/address/${$form.address}`)}>
+              Explorer
+            </button>
+          {:else}
+            <button type="button" class="glass-btn-ghost px-3 py-1 text-xs"
+              on:click={() => ipc.send('emitOpenURL', `https://unmineable.com/coins/${$form.symbol}/address/${$form.address}`)}>
+              Stats
+            </button>
+          {/if}
         </div>
       </div>
 
       <div class="mt-6">
-        <div class="flex items-center">
-          <h5>Balance</h5>
-          <IconRefresh
-            class={`w-3 ml-2 cursor-pointer ${
-              refreshingBalance ? 'animate-spin' : ''
-            }`}
-            on:click={handleGetBalance}
-          />
-        </div>
-        <div class="flex items-end my-2">
-          <p class="text-4xl m-0 mr-2 font-semibold">
-            {balance.pendingBalance || 0}
-          </p>
-          <span>{$form.symbol || ''}</span>
-        </div>
-        <div class="flex flex-col">
-          <p class="m-0 text-sm">
-            <span class="text-gray-500">Last 24h Reward:</span>
-            <span class="font-semibold">{balance.total24h || 0}</span>
-          </p>
-          <p class="m-0 text-sm">
-            <span class="text-gray-500">Total Paid:</span>
-            <span class="font-semibold">{balance.totalPaid || 0}</span>
-          </p>
-        </div>
+        {#if $form.algorithm === 'verushash'}
+          <h5>Mining</h5>
+          <div class="glass-card my-2 p-3 text-xs">
+            <div class="flex justify-between mb-1">
+              <span class="text-gray-400">Pool</span>
+              <span>LuckPool</span>
+            </div>
+            <div class="flex justify-between mb-1">
+              <span class="text-gray-400">Coin</span>
+              <span>VRSC (VerusCoin)</span>
+            </div>
+            <div class="flex justify-between mb-1">
+              <span class="text-gray-400">Algorithm</span>
+              <span>VerusHash 2.2</span>
+            </div>
+          </div>
+        {:else}
+          <div class="flex items-center">
+            <h5>Balance</h5>
+            <IconRefresh class={`w-3 ml-2 cursor-pointer ${refreshingBalance ? 'animate-spin' : ''}`}
+              on:click={handleGetBalance} />
+          </div>
+          <div class="flex items-end my-2">
+            <p class="text-4xl m-0 mr-2 font-semibold">{balance.pendingBalance || 0}</p>
+            <span>{$form.symbol || ''}</span>
+          </div>
+          <div class="flex flex-col">
+            <p class="m-0 text-sm">
+              <span class="text-gray-500">Last 24h Reward:</span>
+              <span class="font-semibold">{balance.total24h || 0}</span>
+            </p>
+            <p class="m-0 text-sm">
+              <span class="text-gray-500">Total Paid:</span>
+              <span class="font-semibold">{balance.totalPaid || 0}</span>
+            </p>
+          </div>
+        {/if}
       </div>
     </div>
   </div>
@@ -178,8 +184,10 @@
       <div class="text-4xl flex items-center">
         {#if $isMining && !currentHashrate}
           <span class="text-gray-600">Running...</span>
+        {:else if $form.algorithm === 'verushash'}
+          <span>{(currentHashrate / 1e6).toFixed(2)} MH/s</span>
         {:else}
-          <span>{currentHashrate || 0} h</span>
+          <span>{currentHashrate || 0} H/s</span>
         {/if}
       </div>
     </div>
