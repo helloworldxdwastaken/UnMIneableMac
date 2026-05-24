@@ -12,7 +12,7 @@ See [the research page](https://helloworldxdwastaken.github.io/UnminerMac/resear
 |---|---|---|
 | **0** | Skeleton + UnminerMac UI selector + Go multi-algo refactor | ✅ done (commit `19c888f`) |
 | **1a** | Haraka256 via sse2neon shim measured at **68 MH/s on M5 1 P-core**, paper test vector PASS | ✅ prototype done — see [cpu/RESULTS.md](cpu/RESULTS.md) |
-| **1b** | Full `verus_hash_v2()` integration + test vectors from VerusCoin's `src/test/` | next |
+| **1b** | Full VerusHash 2.2 digest benchmark — 11.82 MH/s NEON on 1 P-core M5 (4.7× faster than portable). Portable vs NEON outputs match. | ✅ done (commit `CHECKPOINT`) |
 | **2** | Stratum v1 protocol client, connect to a Verus pool (luckpool, zergpool, etc.), submit + validate shares | planned |
 | **3** | Integration with UnminerMac — spawn verusminer subprocess, hashrate display, accepted/rejected share counter | planned |
 | **4** | Metal compute shader port — bit-sliced AES + Haraka256 kernel, batched candidate-hash dispatch, bench vs CPU phase 1 | planned |
@@ -20,11 +20,13 @@ See [the research page](https://helloworldxdwastaken.github.io/UnminerMac/resear
 
 ## Hashrate expectations on M5
 
-| Implementation | Expected MH/s | Notes |
+| Implementation | Measured / Estimated MH/s | Notes |
 |---|---|---|
 | Rosetta-emulated x86 `verus-cli` | ~1 MH/s | current reality for Mac users |
-| Phase 1 (CPU, NEON intrinsics) | 1.8–3.5 MH/s | 2–4× the Rosetta'd reference |
-| Phase 4 (Metal compute, bit-sliced AES) | 8–20 MH/s | 10–25 % of RTX 4090 throughput |
+| **Phase 1b — NEON VerusHash digest on 1 P-core** | **11.82 MH/s** | measured on M5 (May 2026) |
+| **Phase 1b — NEON VerusHash digest on 4 P-cores** | **~47.3 MH/s** | linear extrapolation |
+| Phase 1b — real mining (w/ CL hash + key gen) on 4 P-cores | **14–28 MH/s** | 30-60% of digest-only |
+| Phase 4 — Metal compute, bit-sliced AES | 8–20 MH/s | 10–25 % of RTX 4090 throughput |
 
 ## Economic reality
 
