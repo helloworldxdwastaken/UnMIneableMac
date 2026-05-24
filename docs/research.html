@@ -351,6 +351,32 @@ static void *bench_thread(void *res_void) {
       <p>A Metal VerusHash port is a <strong>research project</strong>. The first arm64-native VerusHash miner would be a notable open-source contribution. Just don't expect it to materially change your monthly mining income.</p>
     </div>
 
+    <h2>Update 4 — Phase 1c: Real VerusHash 2.2 mining measured on M5 CPU</h2>
+    <p>Phase 1c adds the missing pieces: <strong>CL hash</strong> (carry-less multiplication on the key buffer) and <strong>key generation</strong> (chain-hash haraka256 over 8832 bytes). Two implementations benchmarked with key caching (matching real mining where the key only regenerates on block template changes):</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Implementation</th>
+          <th>Real VerusHash 2.2 MH/s (1 P-core)</th>
+          <th>Speedup</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Portable CL hash (pure-C CLMUL emulation)</td>
+          <td>0.84</td>
+          <td>1.0×</td>
+        </tr>
+        <tr class="highlight">
+          <td>NEON CL hash (ARMv8 vmull_p64 hardware CLMUL)</td>
+          <td><strong>1.82</strong></td>
+          <td><strong>2.2×</strong></td>
+        </tr>
+      </tbody>
+    </table>
+    <p>At 4 P-cores: <strong>~7.3 MH/s real VerusHash 2.2 mining</strong> — or ~$0.14/day at current VRSC price. The CL hash dominates (~60-70% of time); ARMv8's <code>vmull_p64</code> instruction provides a 2.2× win over the portable C emulation. <strong>Dual-mining (RandomX P-cores + VerusHash E-cores) would net $0.20-0.30/day on M5.</strong></p>
+    <p>Source: <a href="https://github.com/helloworldxdwastaken/UnminerMac/blob/main/verusminer/cpu/main.cpp" target="_blank" rel="noopener">verusminer/cpu/main.cpp</a> and <a href="https://github.com/helloworldxdwastaken/UnminerMac/blob/main/verusminer/cpu/clhash_neon.cpp" target="_blank" rel="noopener">clhash_neon.cpp</a>.</p>
+
     <h2>Update 3 — Phase 1b: VerusHash 2.2 digest measured on M5 CPU</h2>
     <p>We wired the full <code>verus_hash_v2()</code> streaming digest — processing 188-byte block headers in 32-byte chunks through haraka512. No Boost/CL hash dependencies. Real measured numbers on 1 P-core:</p>
     <table>

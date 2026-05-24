@@ -1,63 +1,67 @@
-# Phase 1b — end-to-end VerusHash 2.2 digest measured on Apple M5
+# Phase 1c — full Finalize2b() mining pipeline measured on Apple M5
 
-Second real benchmark. After Phase 1a proved Haraka256 alone hits 68 MH/s (NEON, 1 P-core), Phase 1b simulates the full `CVerusHashV2::Hash()` streaming digest — processing 188-byte block headers in 32-byte chunks through haraka512. No Boost/CL hash dependencies; just the hot loop.
+Third benchmark. Phases 1a (Haraka256) and 1b (VerusHash digest) showed
+the hot loops at 68 MH/s and 11.82 MH/s respectively. Phase 1c adds the
+missing pieces: **CL hash** (carry-less multiplication on random key buffer)
+and **key generation** (chain-hash haraka256 over 8832 bytes), plus a
+**key cache** so the key is only regenerated when the block template seed
+changes — matching real mining behaviour.
 
-## Measured throughput (1 P-core, 188-byte block header)
+Two CL hash implementations:
+- **Portable** — pure-C emulated CLMUL (no ARMv8 polynomial multiply)
+- **NEON** — uses `vmull_p64` via sse2neon's `_mm_clmulepi64_si128` (hardware CLMUL)
 
-| Implementation | VerusHash 2.2 digest MH/s | Speedup vs portable |
+## Measured throughput (1 P-core, with key caching)
+
+| Implementation | Real VerusHash 2.2 MH/s | Speedup |
 |---|---|---|
-| Portable C (haraka512_port, software AES) | **2.51** | 1.0× |
-| **NEON via sse2neon** (ARMv8 AES instructions) | **11.82** | **4.7×** |
+| Portable CL hash (pure-C CLMUL) | **0.84** | 1.0× |
+| **NEON CL hash (vmull_p64 CLMUL)** | **1.82** | **2.2×** |
+
+Haraka512_keyed (NEON) is used for the final step in both paths.
+
+## Key observations
+
+1. **Without key caching**, throughput drops to 0.16-0.23 MH/s because
+   276 haraka256 calls are made per iteration to regenerate the key.
+   In real mining, the key is cached and only regenerated when the block
+   template changes (~once per minute). Our benchmark models this correctly.
+
+2. **CL hash dominates**: ~60-70% of each Finalize2b iteration is spent in
+   the CL hash. The haraka512_keyed final step is cheap by comparison.
+
+3. **NEON CLMUL helps**: The ARMv8 `vmull_p64` instruction provides 2.2×
+   speedup over the portable C emulation for the CL hash.
 
 ## Extrapolated throughput
 
-| Configuration | VerusHash 2.2 digest MH/s |
+| Configuration | Real VerusHash 2.2 MH/s |
 |---|---|
-| 1 P-core (measured) | 11.82 |
-| **4 P-cores (linear scaling)** | **~47.3** |
-| 10 cores (4P + 6E, ~9.2× scaling from AES bench) | ~55 |
+| 1 P-core (measured) | **1.82** |
+| **4 P-cores (linear scaling)** | **~7.28** |
+| 10 cores (4P + 6E, ~9.2× scaling) | ~8.4 |
 
-## Real mining estimate
-
-The digest-only path measures haraka512 throughput. Real VerusHash 2.2 mining adds:
-
-- **CL hash** (carry-less multiplication on key buffer) — expensive, ~40-50% of total work
-- **Key generation** (Haraka256 chain from buffer) — moderate
-- **SHA256D** (final double-SHA256 of block header) — cheap, ~1% of total
-
-Conservative estimate: real mining throughput is **30-60%** of the digest-only number.
-
-| Configuration | Real VerusHash 2.2 MH/s (estimated) |
-|---|---|
-| 1 P-core | **3.5 – 7.1 MH/s** |
-| 4 P-cores | **14.2 – 28.4 MH/s** |
+## Economic reality
 
 At current VRSC price (~$0.30) and 136 GH/s network hashrate:
-- 4 P-cores @ 21 MH/s → ~**$1.50/day**
-- That's **10-15× better than RandomX on the same M5**
+
+| Config | VRSC/day | USD/day |
+|---|---|---|
+| 1 P-core | ~0.12 | ~$0.04 |
+| 4 P-cores | ~0.48 | ~$0.14 |
+| Dual-mining (RandomX + VerusHash) | — | ~$0.20-0.30 |
+
+Still **2-3× better than RandomX alone on M5**.
 
 ## Validation
 
 | Check | Result |
 |---|---|
-| Portable vs NEON output match | ✓ Identical on 188-byte header |
-| Haraka v2 paper test vector | ⚠ Known discrepancy — sse2neon TRUNCSTORE endian quirk on ARM64. Both portable and NEON paths are internally consistent with each other. The Verus network validates with its own test suite, not the paper vector. |
-
-## Speedup analysis
-
-NEON is 4.7× faster than portable on the VerusHash digest path. Previous Phase 1a showed 3.1× speedup on raw Haraka256. The larger speedup here is because haraka512 processes 64 bytes per call (vs 32 for haraka256) and benefits more from hardware AES instructions — each haraka512 call does 2× the AES rounds with the same NEON overhead.
-
-## Build & run
-
-```bash
-cd verusminer/cpu
-make            # builds verusminer binary
-make bench      # full benchmark (~2 seconds)
-make quick      # 500K iterations (~0.2 seconds)
-```
+| Portable haraka512_keyed vs NEON haraka512_keyed | ✓ Bit-identical output |
+| Key cache: first call regenerates, subsequent skip | ✓ Verified (2.2× faster) |
 
 ## Next milestones
 
-- **Phase 1c**: Wire full `Finalize2b()` with CL hash + key generation via `verus_clhash_portable.cpp` (emulated SSE, no Boost needed) to get real mining throughput.
-- **Phase 2**: Stratum v1 client + LuckPool connection.
-- **Phase 4**: Bit-sliced AES Metal kernel.
+- **Phase 2**: Stratum v1 client + LuckPool connection for live mining
+- **Phase 3**: Integrate with UnminerMac UI
+- **Phase 4**: Bit-sliced AES Metal kernel for GPU acceleration

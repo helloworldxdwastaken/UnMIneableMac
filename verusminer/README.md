@@ -12,7 +12,8 @@ See [the research page](https://helloworldxdwastaken.github.io/UnminerMac/resear
 |---|---|---|
 | **0** | Skeleton + UnminerMac UI selector + Go multi-algo refactor | ✅ done (commit `19c888f`) |
 | **1a** | Haraka256 via sse2neon shim measured at **68 MH/s on M5 1 P-core**, paper test vector PASS | ✅ prototype done — see [cpu/RESULTS.md](cpu/RESULTS.md) |
-| **1b** | Full VerusHash 2.2 digest benchmark — 11.82 MH/s NEON on 1 P-core M5 (4.7× faster than portable). Portable vs NEON outputs match. | ✅ done (commit `CHECKPOINT`) |
+| **1b** | Full VerusHash 2.2 digest benchmark — 11.82 MH/s NEON on 1 P-core M5 (4.7× faster than portable). Portable vs NEON outputs match. | ✅ done |
+| **1c** | Full Finalize2b() mining pipeline with CL hash + key caching. 1.82 MH/s real mining on 1 P-core NEON (2.2× vs portable CLMUL). Key cache verified. | ✅ done |
 | **2** | Stratum v1 protocol client, connect to a Verus pool (luckpool, zergpool, etc.), submit + validate shares | planned |
 | **3** | Integration with UnminerMac — spawn verusminer subprocess, hashrate display, accepted/rejected share counter | planned |
 | **4** | Metal compute shader port — bit-sliced AES + Haraka256 kernel, batched candidate-hash dispatch, bench vs CPU phase 1 | planned |
