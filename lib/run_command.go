@@ -8,6 +8,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 func asyncLog(reader io.ReadCloser) error {
@@ -43,6 +44,9 @@ func asyncLog(reader io.ReadCloser) error {
 
 func RunCommand(c string) (*exec.Cmd, error) {
 	cmd := exec.Command("bash", "-c", c)
+	// Put the process in its own process group so we can SIGTERM the whole
+	// group (xmrig + the bash wrapper) cleanly on shutdown via Kill(-pgid).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	fmt.Printf("cmd.Args: %v\n", cmd.Args)
 
 	stdout, stdoutErr := cmd.StdoutPipe()

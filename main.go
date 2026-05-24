@@ -5,7 +5,9 @@ import (
 	"macMineable/lib"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/2nthony/webview"
@@ -33,7 +35,22 @@ func runApp() {
 	// end
 
 	w := webview.New(true)
+
+	// Ensure xmrig is killed on shutdown. Order matters: KillMining must
+	// run BEFORE webview destroy (LIFO defer order: last registered runs
+	// first), so put it after w.Destroy.
 	defer w.Destroy()
+	defer lib.KillMining()
+
+	// Handle Ctrl-C / SIGTERM from terminal launches and `osascript -e 'quit'`.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println("received signal, killing miner")
+		lib.KillMining()
+		os.Exit(0)
+	}()
 
 	lib.RegisterIPCEvents(w)
 
