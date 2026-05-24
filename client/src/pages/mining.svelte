@@ -1,40 +1,51 @@
 <script>
-  import '@shoelace-style/shoelace/dist/components/button/button'
-  import '@shoelace-style/shoelace/dist/components/tooltip/tooltip'
   import { tryOnMount, tryOnDestroy } from '@svelte-use/core'
   import { form, isMining, preparing, miningLogs, hashrates } from '../store'
   import { getBalance } from '../server/unMineable'
   import IconRefresh from '../components/icons/Refresh.svelte'
+  import IconFileList from '../components/icons/FileList.svelte'
+  import IconSettings from '../components/icons/Settings.svelte'
   import { ipc } from '../ipc'
   import * as router from 'svelte-spa-router'
-  import IconFileList from '../components/icons/FileList.svelte'
   import HashratesChart from '../components/HashratesChart.svelte'
   import Drawer from '../components/Drawer.svelte'
+  import DrawerFormSettings from '../components/DrawerFormSettings.svelte'
   import ConnectionStatus from '../components/ConnectionStatus.svelte'
   import { log } from '../util/log'
-  import { getHashrate } from '../util/mining'
+  import { parseMiningStats } from '../util/mining'
 
   let dialogLogsData = []
   let logDrawerEl
+  let settingsDrawerEl
   let balance = {}
   let refreshingBalance = false
+  let copiedAddress = false
+  let liveStats = {}
 
   $: currentHashrate = $hashrates[$hashrates.length - 1]
   $: isVerus = $form.algorithm === 'verushash'
 
-  miningLogs.subscribe(logs => {
+  miningLogs.subscribe((logs) => {
     dialogLogsData = logs
-    hashrates.update(val => {
-      const hs = getHashrate(logs[logs.length - 1], $form.algorithm)
-      if (hs) val.push(hs)
-      if (val.length > 6) val.shift()
-      return val
-    })
+    const lastLog = logs[logs.length - 1]
+    const stats = parseMiningStats(lastLog, $form.algorithm)
+    if (stats.hashrate) {
+      hashrates.update((val) => {
+        val.push(stats.hashrate)
+        if (val.length > 6) val.shift()
+        return val
+      })
+    }
+    if (stats.vrscPerDay !== undefined || stats.sessionVrsc !== undefined) {
+      liveStats = { ...liveStats, ...stats }
+    }
   })
 
   function handleGetBalance() {
     refreshingBalance = true
-    getBalance($form.symbol, $form.address).then(d => balance = d).finally(() => refreshingBalance = false)
+    getBalance($form.symbol, $form.address)
+      .then((d) => (balance = d))
+      .finally(() => (refreshingBalance = false))
   }
 
   async function handleBack() {
@@ -47,63 +58,166 @@
   }
 
   function handleStart() {
-    ipc.listen('onMiningStarted', () => { $isMining = true })
+    ipc.listen('onMiningStarted', () => ($isMining = true))
     ipc.send('emitStartMining', JSON.stringify($form))
   }
 
   function handleStop() {
-    ipc.listen('onMiningStopped', () => { $isMining = false; if (currentHashrate) $hashrates = [...$hashrates, 0] })
+    ipc.listen('onMiningStopped', () => {
+      $isMining = false
+      if (currentHashrate) $hashrates = [...$hashrates, 0]
+    })
     ipc.send('emitStopMining')
   }
 
-  tryOnMount(() => { if (!isVerus) handleGetBalance() })
-  tryOnDestroy(() => { $miningLogs.length = 0 })
+  function copyAddress() {
+    try {
+      navigator.clipboard.writeText($form.address)
+      copiedAddress = true
+      setTimeout(() => (copiedAddress = false), 1500)
+    } catch (e) {}
+  }
+
+  function openExplorer() {
+    const url = isVerus
+      ? `https://luckpool.net/verus/?address=${$form.address}`
+      : `https://unmineable.com/coins/${$form.symbol}/address/${$form.address}`
+    ipc.send('emitOpenURL', url)
+  }
+
+  tryOnMount(() => {
+    if (!isVerus) handleGetBalance()
+  })
+  tryOnDestroy(() => {
+    $miningLogs.length = 0
+  })
+
+  // Formatted MH/s string for the headline
+  $: hashrateDisplay = (() => {
+    if ($isMining && !currentHashrate) return { value: 'Starting…', unit: '' }
+    if (isVerus) return { value: ((currentHashrate || 0) / 1e6).toFixed(2), unit: 'MH/s' }
+    return { value: String(currentHashrate || 0), unit: 'H/s' }
+  })()
 </script>
 
 <div>
-  <div class="flex items-center justify-between mb-4">
+  <div class="flex items-center justify-between mb-3">
     <button class="btn btn-ghost" on:click={handleBack}>← Back</button>
     <ConnectionStatus />
   </div>
 
-  <div class="card mb-3">
+  <!-- Mining info card -->
+  <div class="card mb-2">
     <div class="card-header">
-      <span class="card-title">{isVerus ? 'VerusHash 2.2' : $form.symbol || 'Mining'}</span>
-      <button class="btn btn-ghost" on:click={logDrawerEl.show}>
-        <IconFileList style="width:16px;height:16px"/>
+      <span class="card-title">{isVerus ? 'VerusHash 2.2 · LuckPool' : ($form.symbol || 'Mining')}</span>
+      <div class="flex items-center gap-2">
+        <button
+          class="btn btn-ghost"
+          title="Settings"
+          on:click={() => settingsDrawerEl && settingsDrawerEl.show()}
+        >
+          <IconSettings style="width:16px;height:16px" />
+        </button>
+        <button
+          class="btn btn-ghost"
+          title="Miner logs"
+          on:click={() => logDrawerEl && logDrawerEl.show()}
+        >
+          <IconFileList style="width:16px;height:16px" />
+        </button>
+      </div>
+    </div>
+
+    <!-- Address row — tap to copy, button to open explorer/dashboard -->
+    <div class="flex items-center gap-2 mb-3">
+      <button
+        class="btn btn-ghost mono truncate"
+        title={copiedAddress ? 'Copied!' : 'Tap to copy address'}
+        style="flex:1;justify-content:flex-start;text-align:left;padding:6px 10px;font-size:12px"
+        on:click={copyAddress}
+      >
+        <span class="truncate" style="display:inline-block;max-width:100%">
+          {copiedAddress ? '✓ Copied!' : $form.address}
+        </span>
+      </button>
+      <button
+        class="btn btn-ghost"
+        title={isVerus ? 'Open LuckPool dashboard' : 'Open unMineable stats'}
+        style="font-size:12px;padding:6px 10px"
+        on:click={openExplorer}
+      >
+        {isVerus ? 'Pool ↗' : 'Stats ↗'}
       </button>
     </div>
 
+    <!-- Earnings + payout chips -->
     <div class="info-grid">
-      <div class="info-chip">
-        <div class="chip-label">Address</div>
-        <div class="chip-value mono truncate" style="max-width:200px">{$form.address}</div>
-      </div>
       {#if isVerus}
-        <div class="info-chip"><div class="chip-label">Pool</div><div class="chip-value">LuckPool · PPLTS</div></div>
-        <div class="info-chip"><div class="chip-label">Coin</div><div class="chip-value">VRSC</div></div>
-        <div class="info-chip"><div class="chip-label">Payout</div><div class="chip-value">Auto · every 20h · min 0.0001 VRSC</div></div>
+        {#if liveStats.sessionVrsc !== undefined}
+          <div class="info-chip">
+            <div class="chip-label">Session Mined</div>
+            <div class="chip-value mono">
+              {liveStats.sessionVrsc.toFixed(6)} VRSC
+              <span style="color:var(--ink-dim);font-weight:400">
+                ≈ ${liveStats.sessionUsd?.toFixed(4) || '0.0000'}
+              </span>
+            </div>
+          </div>
+        {/if}
+        {#if liveStats.vrscPerDay !== undefined}
+          <div class="info-chip">
+            <div class="chip-label">Projected / Day</div>
+            <div class="chip-value mono">
+              {liveStats.vrscPerDay.toFixed(4)} VRSC
+              <span style="color:var(--green);font-weight:400">
+                ≈ ${liveStats.usdPerDay?.toFixed(3) || '0.000'}
+              </span>
+            </div>
+          </div>
+        {/if}
+        <div class="info-chip" style="grid-column:1/-1">
+          <div class="chip-label">Payout</div>
+          <div class="chip-value">Auto · every 20h · min 0.0001 VRSC</div>
+        </div>
       {:else if balance.pendingBalance !== undefined}
-        <div class="info-chip"><div class="chip-label">Balance</div><div class="chip-value">{balance.pendingBalance} {$form.symbol}</div></div>
-        <div class="info-chip"><div class="chip-label">24h Reward</div><div class="chip-value">{balance.total24h || 0}</div></div>
-        <div class="info-chip"><div class="chip-label">Total Paid</div><div class="chip-value">{balance.totalPaid || 0}</div></div>
+        <div class="info-chip">
+          <div class="chip-label" style="display:flex;align-items:center;gap:6px">
+            Pending
+            <IconRefresh
+              class={refreshingBalance ? 'animate-spin' : ''}
+              style="width:10px;height:10px;cursor:pointer"
+              on:click={handleGetBalance}
+            />
+          </div>
+          <div class="chip-value mono">{balance.pendingBalance} {$form.symbol}</div>
+        </div>
+        <div class="info-chip">
+          <div class="chip-label">24h Reward</div>
+          <div class="chip-value mono">{balance.total24h || 0}</div>
+        </div>
+        <div class="info-chip" style="grid-column:1/-1">
+          <div class="chip-label">Total Paid</div>
+          <div class="chip-value mono">{balance.totalPaid || 0} {$form.symbol}</div>
+        </div>
       {/if}
     </div>
   </div>
 
-  <HashratesChart />
-
-  <div class="card mt-3">
-    <div class="stat-label">Hashrate</div>
-    <div class="stat-value">
-      {#if $isMining && !currentHashrate}
-        <span style="color:var(--ink-dim)">Starting…</span>
-      {:else if isVerus}
-        {(currentHashrate / 1e6).toFixed(2)} <span style="font-size:18px;font-weight:500;color:var(--ink-dim)">MH/s</span>
-      {:else}
-        {currentHashrate || 0} <span style="font-size:18px;font-weight:500;color:var(--ink-dim)">H/s</span>
+  <!-- Hashrate card -->
+  <div class="card mb-2">
+    <div class="flex items-baseline justify-between mb-2">
+      <div class="stat-label">Hashrate</div>
+      {#if liveStats.threads}
+        <div class="text-xs text-dim">{liveStats.threads} threads active</div>
       {/if}
     </div>
+    <div class="stat-value">
+      {hashrateDisplay.value}
+      {#if hashrateDisplay.unit}
+        <span style="font-size:18px;font-weight:500;color:var(--ink-dim)">{hashrateDisplay.unit}</span>
+      {/if}
+    </div>
+    <HashratesChart />
 
     <div class="divider"></div>
 
@@ -119,8 +233,11 @@
   </div>
 </div>
 
-<Drawer fullscreen bind:this={logDrawerEl} title="Logs">
-  <pre style="height:100%;padding:16px;overflow:auto;font-family:var(--font-family-mono);font-size:12px;color:var(--ink-dim);background:var(--bg-root);border-radius:10px">
-    {dialogLogsData.join('\n') || 'Waiting for miner output…'}
-  </pre>
+<!-- Settings drawer (CPU slider + persist) -->
+<DrawerFormSettings bind:this={settingsDrawerEl} />
+
+<!-- Logs drawer -->
+<Drawer fullscreen bind:this={logDrawerEl} title="Miner logs">
+  <pre
+    style="height:100%;padding:14px;overflow:auto;font-family:'SF Mono',Menlo,monospace;font-size:12px;color:var(--ink-dim);background:var(--bg-root);border-radius:10px;white-space:pre-wrap;word-break:break-all">{dialogLogsData.join('\n') || 'Waiting for miner output…'}</pre>
 </Drawer>

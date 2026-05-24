@@ -1,35 +1,89 @@
 <script>
-  import { tryOnMount } from '@svelte-use/core'
-  import { listen } from 'svelte/internal'
-  import '@shoelace-style/shoelace/dist/components/drawer/drawer'
   import { useDispatch } from '../use/dispatch'
 
   const { dispatch } = useDispatch()
   export let title = 'Drawer'
-  export let fullscreen = false
-  $: style = fullscreen ? '--size: 100vw;' : ''
+  export let fullscreen = false  // kept for API compat; native modal is always full
 
-  let drawerEl, closeEl
+  let isOpen = false
 
-  export function show() { drawerEl.show() }
-  export function hide() { drawerEl.hide() }
+  export function show() {
+    isOpen = true
+    dispatch('show')
+  }
 
-  tryOnMount(() => {
-    listen(closeEl, 'click', () => drawerEl.hide())
-    listen(drawerEl, 'sl-show', () => dispatch('show'))
-    listen(drawerEl, 'sl-after-hide', () => dispatch('after-hide'))
-  })
+  export function hide() {
+    isOpen = false
+    dispatch('after-hide')
+  }
+
+  function onBackdropClick(e) {
+    if (e.target === e.currentTarget) hide()
+  }
+
+  function onKey(e) {
+    if (e.key === 'Escape' && isOpen) hide()
+  }
 </script>
 
-<sl-drawer bind:this={drawerEl} {style} no-header>
-  <header style="margin-bottom:24px">
-    <h2 style="font-size:20px;font-weight:600;color:var(--ink)">{title}</h2>
-  </header>
-  <div style="flex:1;overflow:auto;padding-bottom:16px">
-    <slot />
+<svelte:window on:keydown={onKey} />
+
+{#if isOpen}
+  <div class="drawer-backdrop" on:click={onBackdropClick}>
+    <div class="drawer-panel">
+      <header class="drawer-header">
+        <h2 style="font-size:18px;font-weight:600;color:var(--ink);margin:0">{title}</h2>
+        <button type="button" class="btn btn-ghost" on:click={hide} aria-label="Close">✕</button>
+      </header>
+      <div class="drawer-body">
+        <slot />
+      </div>
+      <div class="drawer-footer">
+        <button type="button" class="btn btn-secondary" on:click={hide}>Close</button>
+        <slot name="footer" />
+      </div>
+    </div>
   </div>
-  <div slot="footer" class="flex items-center justify-end gap-3">
-    <button type="button" bind:this={closeEl} class="btn btn-secondary">Close</button>
-    <slot name="footer" />
-  </div>
-</sl-drawer>
+{/if}
+
+<style>
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 1000;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+  }
+  .drawer-panel {
+    width: 100%;
+    height: 100%;
+    background: var(--bg-surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .drawer-header {
+    padding: 18px 22px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .drawer-body {
+    flex: 1;
+    overflow: auto;
+    padding: 18px 22px;
+  }
+  .drawer-footer {
+    padding: 14px 22px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+  }
+</style>

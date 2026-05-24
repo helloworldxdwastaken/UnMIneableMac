@@ -51,7 +51,7 @@
   })
 </script>
 
-<div bind:this={el} class="h-32 hashrates-chart" />
+<div bind:this={el} class="hashrates-chart" style="height:64px" />
 
 <style global>
   .hashrates-chart .c3-tooltip-container table.c3-tooltip tbody tr:first-child {
