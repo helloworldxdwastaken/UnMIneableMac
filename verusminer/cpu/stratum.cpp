@@ -77,10 +77,16 @@ void StratumClient::authorize() {
 
 void StratumClient::submit(const std::string &job_id, const std::string &extranonce2,
                            const std::string &ntime, const std::string &nonce_hex) {
+    submit_with_worker(cfg.worker, job_id, extranonce2, ntime, nonce_hex);
+}
+
+void StratumClient::submit_with_worker(const std::string &worker,
+                           const std::string &job_id, const std::string &extranonce2,
+                           const std::string &ntime, const std::string &nonce_hex) {
     char buf[1024];
     snprintf(buf, sizeof(buf),
         "{\"id\":%d,\"method\":\"mining.submit\",\"params\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]}\n",
-        msg_id++, cfg.worker.c_str(), job_id.c_str(),
+        msg_id++, worker.c_str(), job_id.c_str(),
         extranonce2.c_str(), ntime.c_str(), nonce_hex.c_str());
     send(buf);
 }

