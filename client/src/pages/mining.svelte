@@ -80,9 +80,9 @@
         <div class="chip-value mono truncate" style="max-width:200px">{$form.address}</div>
       </div>
       {#if isVerus}
-        <div class="info-chip"><div class="chip-label">Pool</div><div class="chip-value">LuckPool</div></div>
+        <div class="info-chip"><div class="chip-label">Pool</div><div class="chip-value">LuckPool · PPLTS</div></div>
         <div class="info-chip"><div class="chip-label">Coin</div><div class="chip-value">VRSC</div></div>
-        <div class="info-chip"><div class="chip-label">Payout</div><div class="chip-value">Auto</div></div>
+        <div class="info-chip"><div class="chip-label">Payout</div><div class="chip-value">Auto · every 20h · min 0.0001 VRSC</div></div>
       {:else if balance.pendingBalance !== undefined}
         <div class="info-chip"><div class="chip-label">Balance</div><div class="chip-value">{balance.pendingBalance} {$form.symbol}</div></div>
         <div class="info-chip"><div class="chip-label">24h Reward</div><div class="chip-value">{balance.total24h || 0}</div></div>

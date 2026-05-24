@@ -113,9 +113,9 @@
       <div class="card-header"><span class="card-title">Pool Info</span></div>
       <div class="info-grid" style="margin-bottom:0">
         <div class="info-chip"><div class="chip-label">Coin</div><div class="chip-value">VerusCoin (VRSC)</div></div>
-        <div class="info-chip"><div class="chip-label">Pool</div><div class="chip-value">LuckPool · 1% fee</div></div>
+        <div class="info-chip"><div class="chip-label">Pool</div><div class="chip-value">LuckPool · 1% fee · PPLTS</div></div>
         <div class="info-chip"><div class="chip-label">Price</div><div class="chip-value text-gold">~$0.61</div></div>
-        <div class="info-chip"><div class="chip-label">Payout</div><div class="chip-value">Auto at threshold</div></div>
+        <div class="info-chip"><div class="chip-label">Payout</div><div class="chip-value">Auto · every 20h · min 0.0001 VRSC</div></div>
       </div>
     </div>
   {:else}
