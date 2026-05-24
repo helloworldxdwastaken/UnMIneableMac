@@ -80,7 +80,7 @@
 
   function openExplorer() {
     const url = isVerus
-      ? `https://luckpool.net/verus/?address=${$form.address}`
+      ? `https://luckpool.net/verus/miner.html?${$form.address}`
       : `https://unmineable.com/coins/${$form.symbol}/address/${$form.address}`
     ipc.send('emitOpenURL', url)
   }
@@ -151,11 +151,34 @@
     </div>
 
     <!-- Earnings + payout chips -->
+    {#if isVerus}
+      <!-- ⚠ Honest disclosure: share submission is not fully implemented yet.
+           Theoretical numbers shown below are CPU-side math, not actual
+           pool-accepted earnings. Always check the pool dashboard for the
+           real number. -->
+      <div
+        class="card-accent"
+        style="border:1px solid rgba(245,194,66,.4);background:rgba(245,194,66,.08);
+               border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.45">
+        <strong style="color:var(--gold)">⚠ Share validation in development.</strong>
+        <span class="text-dim">
+          The miner is computing real VerusHash 2.2 hashes at the reported
+          speed, but share submission to LuckPool is incomplete. Numbers
+          below are <em>theoretical</em> — verify confirmed VRSC via
+          <button
+            type="button"
+            class="btn btn-ghost"
+            style="padding:0;display:inline;color:var(--accent);font-size:inherit"
+            on:click={openExplorer}>Pool dashboard ↗</button>.
+        </span>
+      </div>
+    {/if}
+
     <div class="info-grid">
       {#if isVerus}
         {#if liveStats.sessionVrsc !== undefined}
           <div class="info-chip">
-            <div class="chip-label">Session Mined</div>
+            <div class="chip-label">Session Hashed (theoretical)</div>
             <div class="chip-value mono">
               {liveStats.sessionVrsc.toFixed(6)} VRSC
               <span style="color:var(--ink-dim);font-weight:400">
@@ -166,7 +189,7 @@
         {/if}
         {#if liveStats.vrscPerDay !== undefined}
           <div class="info-chip">
-            <div class="chip-label">Projected / Day</div>
+            <div class="chip-label">If Shares Valid / Day</div>
             <div class="chip-value mono">
               {liveStats.vrscPerDay.toFixed(4)} VRSC
               <span style="color:var(--green);font-weight:400">
@@ -176,7 +199,7 @@
           </div>
         {/if}
         <div class="info-chip" style="grid-column:1/-1">
-          <div class="chip-label">Payout</div>
+          <div class="chip-label">Payout (once shares are accepted)</div>
           <div class="chip-value">Auto · every 20h · min 0.0001 VRSC</div>
         </div>
       {:else if balance.pendingBalance !== undefined}
