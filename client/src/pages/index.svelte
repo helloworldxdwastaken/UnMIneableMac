@@ -8,9 +8,9 @@
 </script>
 
 <hgroup>
-  <h1 class="text-sky-500">macMineable</h1>
+  <h1 class="text-sky-500">UnminerMac</h1>
   <h6 class="text-xs text-green-500">
-    3rd-party unMineable for macOS.
+    unMineable client for Apple Silicon.
   </h6>
 </hgroup>
 

@@ -54,7 +54,7 @@ func runApp() {
 
 	lib.RegisterIPCEvents(w)
 
-	w.SetTitle("macMineable")
+	w.SetTitle("UnminerMac")
 	w.SetSize(400, 650, webview.HintFixed)
 
 	createServer()

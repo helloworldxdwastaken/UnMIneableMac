@@ -1,8 +1,8 @@
-# UnMineableMac
+# UnminerMac
 
-A heavily modified fork of [2nthony/macmineable](https://github.com/2nthony/macmineable) (abandoned 2022). Maintained by [tokyo](https://github.com/helloworldxdwastaken). Targets Apple Silicon (M1–M5+) on macOS 11 and later, including macOS Tahoe 26.x.
+Built by **[Verox Studio](https://veroxstudio.com)**. A heavily modified fork of [2nthony/macmineable](https://github.com/2nthony/macmineable) (upstream abandoned 2022). Targets Apple Silicon (M1–M5+) on macOS 11 and later, including macOS Tahoe 26.x.
 
-> **This is not the same app as upstream.** The original app silently routed mining commissions to the original author via hidden referral codes and phoned home for ads. This fork strips all of that out, updates every binary and dependency, rewrites the parts that were broken in 2026, and adds the features upstream never had.
+> **This is not the same app as upstream.** The original silently routed mining commissions to the upstream author via hidden referral codes and phoned home for affiliate ads. UnminerMac strips all of that out, updates every binary and dependency, rewrites the parts that were broken in 2026, and adds the features upstream never had.
 
 ---
 

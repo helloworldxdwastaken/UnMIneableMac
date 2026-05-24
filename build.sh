@@ -1,7 +1,7 @@
 #!/bin/sh
 # https://xie.infoq.cn/article/4b954f196d6d4a288c8c6981c
 
-NAME="macMineable"
+NAME="UnminerMac"
 OUT="out"
 APP="$NAME.app"
 VERSION=$(sed -n 's/.*"version": "\(.*\)",/\1/p' package.json)
@@ -22,7 +22,7 @@ cat > $OUT/$APP/Contents/Info.plist << EOF
 	<key>CFBundleIconFile</key>
 	<string>icon.icns</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.2nthony.$NAME</string>
+	<string>com.veroxstudio.$NAME</string>
 	<key>NSHighResolutionCapable</key>
   <true/>
 	<key>LSUIElement</key>

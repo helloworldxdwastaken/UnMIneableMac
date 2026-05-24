@@ -1,6 +1,6 @@
 {
-  "name": "macmineable",
-  "version": "0.15.2",
+  "name": "unminermac",
+  "version": "0.17.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

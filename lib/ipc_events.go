@@ -109,7 +109,7 @@ func RegisterIPCEvents(w webview.WebView) {
 		}
 
 		process, err := RunCommand(
-			fmt.Sprintf(`%s --no-color --url=rx.unmineable.com:3333 --algo=rx --pass=x --keepalive --user=%s:%s.macMineable#%s --cpu-max-threads-hint=%s`, minerPath, form.Symbol, form.Address, refCode, fmt.Sprint(form.CPUUsage)),
+			fmt.Sprintf(`%s --no-color --url=rx.unmineable.com:3333 --algo=rx --pass=x --keepalive --user=%s:%s.UnminerMac#%s --cpu-max-threads-hint=%s`, minerPath, form.Symbol, form.Address, refCode, fmt.Sprint(form.CPUUsage)),
 		)
 		if err != nil {
 			w.Eval(fmt.Sprintf(`onMiningStartedError("%s")`, err))
