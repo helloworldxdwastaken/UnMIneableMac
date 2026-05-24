@@ -5,7 +5,7 @@ CC       = clang
 CFLAGS   = -O3 -march=armv8-a+crypto+sha2+aes -Wall -Wno-deprecated-declarations
 CXXFLAGS = $(CFLAGS) -std=c++17 -Wno-unused-variable
 
-OBJS = haraka_portable.o haraka.o clhash_portable.o clhash_neon.o
+OBJS = haraka_portable.o haraka.o clhash_portable.o clhash_neon.o stratum.o
 
 all: verusminer
 
@@ -16,7 +16,7 @@ all: verusminer
 	$(CXX) $(CXXFLAGS) -I. -c $< -o $@
 
 verusminer: main.o $(OBJS)
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread
 
 bench: verusminer
 	./verusminer
