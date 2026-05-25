@@ -49,9 +49,15 @@ constant uint RC[40 * 4] = {
 
 // MixColumns on ONE 128-bit state (4 uint32 columns).
 // Operates on each column independently, mixing its 4 row bytes.
+//
+// BUG-FIX: MSL `uchar << 1` truncates to uchar (8 bits), so 0x80 << 1
+// becomes 0x00 instead of 0x100 — breaking the GF(2^8) doubling for any
+// byte with bit 7 set. C int-promotes uchar to int before shift, MSL
+// doesn't. Cast to int first to recover the full result, then test bit 7
+// (via uchar mask) and conditionally XOR 0x1b for the GF reduction.
 inline void mixcolumns(thread uint *s) {
-    #define X2(x) ((uchar)(((x)<<1) ^ (((x)>>7) ? 0x1b : 0)))
-    #define X3(x) ((uchar)(X2(x) ^ (x)))
+    #define X2(x) ((uchar)((((int)(x)) << 1) ^ (((uchar)(x) & 0x80) ? 0x1b : 0)))
+    #define X3(x) ((uchar)(X2(x) ^ (uchar)(x)))
 
     // Extract bytes: each uint32 = column, bytes within = rows 0..3
     uchar a0=s[0]&0xff, a1=(s[0]>>8)&0xff, a2=(s[0]>>16)&0xff, a3=s[0]>>24;
