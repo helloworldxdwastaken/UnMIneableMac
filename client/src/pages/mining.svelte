@@ -291,14 +291,9 @@
             </div>
           </div>
         {/if}
-        {#if liveStats.sessionVrsc !== undefined && !poolLive?.minerKnown}
-          <div class="info-chip">
-            <div class="chip-label">Session estimate</div>
-            <div class="chip-value mono">
-              {liveStats.sessionVrsc.toFixed(6)} VRSC
-            </div>
-          </div>
-        {/if}
+        <!-- (No "Session estimate" — it was based on a stale local formula.
+             The "Mined · last 24h" chip above is the real earnings since the
+             last 24h, pulled live from LuckPool by your wallet address.) -->
         <div class="info-chip" style="grid-column:1/-1">
           <div class="chip-label">Payout</div>
           <div class="chip-value">
