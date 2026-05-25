@@ -263,6 +263,7 @@
     </a>
     <div class="links">
       <a href="#ranking">Best coins</a>
+      <a href="#verus-calc">VRSC calc</a>
       <a href="#install">Install</a>
       <a href="research.html">Research</a>
       <a href="blog.html">Blog</a>
@@ -357,6 +358,41 @@
         Daily yield assumption: ~$0.01 USD per kH/s per day, after the 1% pool fee. Real yield varies with XMR price and network difficulty.
         <span class="warn">⚠ ETH / SHIB payouts are on Ethereum L1, where chain gas can eat $5–20 of your payout</span>.
         XMR has no conversion spread — you get the most actual XMR by picking XMR.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="verus-calc">
+  <div class="container">
+    <h2>Mining VerusHash directly?</h2>
+    <p class="subhead">If you pick VerusHash 2.2 in the app you mine VRSC straight to LuckPool — no unMineable middleman, paid in VRSC. The math is totally different from RandomX. This calculator uses LIVE pool data (network hashrate + last block reward + current VRSC/USD) from <code>luckpool.net/verus/stats</code>.</p>
+
+    <div class="glass ranking-wrap">
+      <div class="ranking-controls">
+        <div class="left">
+          <span class="live-dot" id="verus-dot"></span>
+          <span id="verus-status">Loading network data…</span>
+        </div>
+        <div>
+          <label for="verus-hashrate-input">Your hashrate (MH/s):</label>
+          <input type="number" id="verus-hashrate-input" value="3.88" min="0.1" max="100" step="0.1">
+        </div>
+      </div>
+      <table class="coins">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Value</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody id="verus-tbody"></tbody>
+      </table>
+      <p class="ranking-note">
+        Daily yield: <code>(your_MH/s × 1e6) ÷ network_sols × (86400 ÷ block_time) × block_reward</code>.
+        On M5 with all P+E cores, expect <strong>3-5 MH/s</strong> CPU; once Metal GPU mining ships, <strong>12-20 MH/s</strong>.
+        Pool fee is ~0% on LuckPool (PPLNS solo-style), so you get gross yield minus the tiny block-finding luck variance.
       </p>
     </div>
   </div>
@@ -556,6 +592,114 @@ async function fetchLive() {
   }
 }
 fetchLive();
+
+// =============================================================
+// VerusHash (LuckPool) calculator — live network params, live USD price
+// =============================================================
+const verusTbody = document.getElementById("verus-tbody");
+const verusHashInput = document.getElementById("verus-hashrate-input");
+const verusStatus = document.getElementById("verus-status");
+const verusDot = document.getElementById("verus-dot");
+
+// Fallbacks if LuckPool unreachable
+const VERUS_FALLBACK = {
+  networkSols: 1.34e12,   // 1.34 TS/s
+  blockReward: 3.0,       // VRSC per block
+  blockTimeSec: 60,
+  priceUSD: 0.93,
+};
+
+let verusParams = { ...VERUS_FALLBACK };
+
+function fmtVrsc(v) {
+  if (v >= 1) return v.toFixed(4);
+  if (v >= 0.01) return v.toFixed(5);
+  return v.toFixed(6);
+}
+function fmtUsdSmall(v) {
+  if (v < 0.001) return "<$0.001";
+  if (v < 1) return "$" + v.toFixed(4);
+  return "$" + v.toFixed(2);
+}
+function fmtHashrate(sols) {
+  if (sols >= 1e12) return (sols / 1e12).toFixed(2) + " TH/s";
+  if (sols >= 1e9)  return (sols / 1e9).toFixed(2)  + " GH/s";
+  if (sols >= 1e6)  return (sols / 1e6).toFixed(2)  + " MH/s";
+  return sols.toFixed(0) + " H/s";
+}
+
+function renderVerus(mhs) {
+  const yourSols = mhs * 1e6;
+  const blocksPerDay = 86400 / verusParams.blockTimeSec;
+  const share = yourSols / verusParams.networkSols;
+  const vrscPerDay = share * blocksPerDay * verusParams.blockReward;
+  const usdPerDay = vrscPerDay * verusParams.priceUSD;
+  const vrscPerMonth = vrscPerDay * 30;
+  const usdPerMonth = usdPerDay * 30;
+  // Days to reach 0.1 VRSC (typical small payout threshold; LuckPool actual
+  // min is 0.0001 but most users want at least pennies to bother withdrawing)
+  const daysTo01 = vrscPerDay > 0 ? (0.1 / vrscPerDay) : Infinity;
+
+  verusTbody.innerHTML = `
+    <tr>
+      <td><strong>Estimated / day</strong></td>
+      <td class="usd">${fmtVrsc(vrscPerDay)} VRSC <span style="color:var(--ink-dim);font-weight:400">≈ ${fmtUsdSmall(usdPerDay)}</span></td>
+      <td class="days">at ${mhs} MH/s</td>
+    </tr>
+    <tr>
+      <td>Estimated / month</td>
+      <td class="usd">${fmtVrsc(vrscPerMonth)} VRSC <span style="color:var(--ink-dim);font-weight:400">≈ ${fmtUsdSmall(usdPerMonth)}</span></td>
+      <td class="days">${(mhs * 720).toFixed(0)} MH total compute</td>
+    </tr>
+    <tr>
+      <td>Days to 0.1 VRSC</td>
+      <td class="usd">${daysTo01 < 365 ? Math.round(daysTo01) + " days" : (daysTo01 / 365).toFixed(1) + " yr"}</td>
+      <td class="days">enough to bother withdrawing</td>
+    </tr>
+    <tr>
+      <td>Your share of network</td>
+      <td class="usd">${(share * 100).toFixed(6)}%</td>
+      <td class="days">network is ${fmtHashrate(verusParams.networkSols)}</td>
+    </tr>
+    <tr>
+      <td>Last block reward</td>
+      <td class="usd">${verusParams.blockReward.toFixed(3)} VRSC</td>
+      <td class="days">at $${verusParams.priceUSD.toFixed(4)} VRSC</td>
+    </tr>
+  `;
+}
+
+async function fetchVerusLive() {
+  try {
+    const r = await fetch("https://luckpool.net/verus/stats", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    if (data?.networkStats?.sols > 0) {
+      verusParams.networkSols = data.networkStats.sols;
+    }
+    if (data?.poolStats?.lastBlockReward > 0) {
+      verusParams.blockReward = data.poolStats.lastBlockReward;
+    }
+    if (data?.marketStats?.price_usd > 0) {
+      verusParams.priceUSD = data.marketStats.price_usd;
+    }
+    verusDot.classList.remove("offline");
+    verusStatus.textContent = `Live · network ${fmtHashrate(verusParams.networkSols)} · ${data?.poolStats?.minerCount ?? '?'} miners`;
+  } catch (e) {
+    verusDot.classList.add("offline");
+    verusStatus.textContent = "Using fallback network params (LuckPool unreachable)";
+  }
+  renderVerus(parseFloat(verusHashInput.value) || 3.88);
+}
+
+verusHashInput.addEventListener("input", () => {
+  const mhs = parseFloat(verusHashInput.value);
+  if (!isNaN(mhs) && mhs > 0) renderVerus(mhs);
+});
+
+fetchVerusLive();
+// Refresh every 2 min so price + network are live
+setInterval(fetchVerusLive, 120_000);
 </script>
 
 </body>

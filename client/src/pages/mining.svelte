@@ -29,6 +29,37 @@
   $: currentHashrate = $hashrates[$hashrates.length - 1]
   $: isVerus = $form.algorithm === 'verushash'
 
+  // VRSC/day — prefer MEASURED values from LuckPool over our calculation:
+  //   1. 7-day rolling average (most accurate, smooths luck variance)
+  //   2. Past-24h actual (noisy but real)
+  //   3. Extrapolation from current hashrate × live network params
+  // The first two are literally what hit your wallet — not an estimate.
+  // The third is only useful in the first few hours before you have history.
+  $: dailyVrsc = (() => {
+    if (!isVerus || !poolLive) return null
+    // Prefer 7d average if available (most reliable)
+    if (poolLive.vrscLast7d > 0) {
+      return { value: poolLive.vrscLast7d / 7, source: '7-day avg from LuckPool', kind: 'measured' }
+    }
+    // Fall back to last-24h actual
+    if (poolLive.vrscLast24h > 0) {
+      return { value: poolLive.vrscLast24h, source: 'past 24h actual', kind: 'measured' }
+    }
+    // Fall back to extrapolation from current hashrate × live network
+    if (currentHashrate && poolLive.networkSols) {
+      const blocksPerDay = 86400 / (poolLive.blockTimeSec || 60)
+      const share = currentHashrate / poolLive.networkSols
+      return {
+        value: share * blocksPerDay * (poolLive.blockReward || 3),
+        source: 'extrapolated from current hashrate',
+        kind: 'estimate',
+      }
+    }
+    return null
+  })()
+  $: dailyUsd = (dailyVrsc && poolLive?.priceUSD)
+    ? dailyVrsc.value * poolLive.priceUSD : undefined
+
   miningLogs.subscribe((logs) => {
     dialogLogsData = logs
     const lastLog = logs[logs.length - 1]
@@ -228,26 +259,41 @@
           {/if}
         {/if}
 
-        <!-- Estimate from current hashrate (uses live VRSC price) -->
-        {#if liveStats.vrscPerDay !== undefined}
+        <!-- "/ day" — prefer MEASURED from LuckPool (your actual past earnings)
+             over our extrapolation. measured is reality, extrapolation is just
+             a formula that ignores variance/luck. -->
+        {#if dailyVrsc}
           <div class="info-chip">
-            <div class="chip-label">Estimated / day · {liveStats.threads || '?'} threads</div>
+            <div class="chip-label">
+              {dailyVrsc.kind === 'measured' ? 'Earning / day' : 'Estimated / day'}
+              <span style="color:var(--ink-faint);font-weight:400;font-size:10px">· {dailyVrsc.source}</span>
+            </div>
             <div class="chip-value mono">
-              {liveStats.vrscPerDay.toFixed(4)} VRSC
-              <span style="color:var(--green);font-weight:400">
-                ≈ ${((poolLive?.priceUSD || 0.93) * liveStats.vrscPerDay).toFixed(3)}
+              {dailyVrsc.value.toFixed(6)} VRSC
+              {#if dailyUsd !== undefined}
+                <span style="color:var(--green);font-weight:400">
+                  ≈ ${dailyUsd.toFixed(4)}
+                </span>
+              {/if}
+            </div>
+          </div>
+        {/if}
+        <!-- Pool's view of your hashrate — most accurate (averaged over share
+             submission history, includes whatever the pool counts as effective). -->
+        {#if poolLive?.miner?.hashrate !== undefined && Number(poolLive.miner.hashrate) > 0}
+          <div class="info-chip">
+            <div class="chip-label">Pool-side hashrate <span style="color:var(--green)">● live</span></div>
+            <div class="chip-value mono">
+              {(Number(poolLive.miner.hashrate) / 1e6).toFixed(2)} MH/s
+              <span style="color:var(--ink-dim);font-weight:400;font-size:11px">
+                · in-app: {currentHashrate ? (currentHashrate / 1e6).toFixed(2) : '?'} MH/s
               </span>
             </div>
           </div>
         {/if}
-        {#if liveStats.sessionVrsc !== undefined && !poolLive?.minerKnown}
-          <div class="info-chip">
-            <div class="chip-label">Session estimate</div>
-            <div class="chip-value mono">
-              {liveStats.sessionVrsc.toFixed(6)} VRSC
-            </div>
-          </div>
-        {/if}
+        <!-- (No "Session estimate" — it was based on a stale local formula.
+             The "Mined · last 24h" chip above is the real earnings since the
+             last 24h, pulled live from LuckPool by your wallet address.) -->
         <div class="info-chip" style="grid-column:1/-1">
           <div class="chip-label">Payout</div>
           <div class="chip-value">

@@ -102,11 +102,19 @@ static void pbaas_apply_clear(uint8_t *buf, size_t len) {
 // their dependencies — KEYMASK, generate_cl_key_cached, etc. Forward
 // declarations live in the section below the existing helpers.)
 
-// Realistic VRSC/day estimate per MH/s, based on current network conditions:
-//   Network hashrate ~136 GH/s, block reward ~24 VRSC, 60s blocks → 34,560 VRSC/day
-//   1 MH/s share = 1e6 / 136e9 = 7.35e-6 of network = ~0.254 VRSC/day
-// Approximate — actual yield depends on luck and network drift.
-static constexpr double VRSC_PER_MHS_DAY = 0.254;
+// Fallback VRSC/day estimate per MH/s. The UI overrides this with a live
+// calculation from LuckPool's /verus/stats (so the STATS log line stays
+// approximate, but the user-visible number is correct).
+//
+// Current numbers (May 2026):
+//   Network hashrate ~1.34 TH/s (= 1.34e12 sols/s)
+//   Block reward ~3 VRSC (post-halvings), target 60s blocks → ~4320 VRSC/day
+//   1 MH/s share = 1e6 / 1.34e12 = 7.46e-7 of network = ~0.00322 VRSC/day
+//
+// The earlier value (0.254) was based on a 136 GH/s network — Verus has
+// grown ~10× since then. The STATS log line should be treated as
+// approximate; trust the UI for the real number.
+static constexpr double VRSC_PER_MHS_DAY = 0.0032;
 // Hardcoded VRSC price estimate. Updated occasionally. UI/website should
 // show current price live.
 static constexpr double VRSC_USD_PRICE = 0.60;
@@ -115,6 +123,21 @@ static constexpr double VRSC_USD_PRICE = 0.60;
 #define VERUSKEYSIZE      (1024 * 8 + (40 * 16))
 #define KEYREFRESHSIZE    0x2000
 #define KEYMASK           (KEYREFRESHSIZE - 1)
+
+// --gpu mode globals + Metal bridge declarations. Declared up here so both
+// the gpu_worker_loop and run_miner can see them. Bridge is implemented in
+// verusminer/metal/metal_bridge.mm (linked when --gpu is on).
+static bool        g_use_gpu        = false;
+static uint32_t    g_gpu_batch_size = 8192;
+static std::string g_gpu_kernel_path;
+
+extern "C" int  gpu_mine_init(const char *kernel_metal_path, uint32_t batch_size);
+extern "C" int  gpu_mine_dispatch(const uint8_t *input_template, uint32_t input_len,
+                                  uint32_t body_tail_off, const uint8_t *target,
+                                  uint64_t base_nonce, uint64_t *out_nonces,
+                                  uint8_t *out_hashes);
+extern "C" void gpu_mine_shutdown(void);
+extern "C" uint32_t gpu_mine_batch_size(void);
 
 static double now_seconds() {
     using namespace std::chrono;
@@ -859,6 +882,167 @@ static void worker_loop(int thread_id, int n_threads, MinerShared *shared) {
     }
 }
 
+// GPU worker — single-thread driver. Replaces all CPU workers when --gpu is on.
+// Dispatches one batch of `g_gpu_batch_size` nonces to the Metal kernel per
+// iteration, drains winners, verifies the first few with CPU (trust-but-verify),
+// and submits accepted shares via the same stratum path as the CPU loop.
+static void gpu_worker_loop(MinerShared *shared) {
+    std::vector<uint8_t> hash_buf;  hash_buf.reserve(1600);
+    std::vector<uint8_t> notify_sol;
+    std::string last_job_id;
+    std::vector<uint8_t> en1_bytes;
+    uint64_t base_nonce = 0;
+    const size_t NONCE_FIELD = 32;
+    const size_t NONCE_OFFSET = 4 + 32 + 32 + 32 + 4 + 4;
+    size_t soln_off = 0, body_off = 0;
+    int current_variant = 2;
+
+    // Trust-but-verify: recompute the first VERIFY_FIRST_N winners on CPU and
+    // confirm GPU produced the same hash. After that, skip CPU verification.
+    constexpr int VERIFY_FIRST_N = 16;
+    int verified_so_far = 0;
+    int verify_failures = 0;
+    thread_local CVerusHashV2 vh2_cpu(SOLUTION_VERUSHHASH_V2_2);
+
+    uint32_t batch_size = gpu_mine_batch_size();
+    std::vector<uint64_t> found_nonces(64);
+    std::vector<uint8_t>  found_hashes(64 * 32);
+
+    while (!shared->stop.load(std::memory_order_relaxed)) {
+        const StratumJob *job = shared->stratum->current_job();
+        const auto &target = shared->stratum->target_bytes();
+        if (!job || target.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            continue;
+        }
+
+        // Rebuild hash_buf on new job (same as CPU path)
+        if (job->job_id != last_job_id) {
+            last_job_id = job->job_id;
+            notify_sol.clear(); append_hex(notify_sol, job->solution);
+            en1_bytes.clear();  append_hex(en1_bytes, shared->stratum->extranonce1());
+            hash_buf.clear();
+            append_hex(hash_buf, job->version);
+            append_hex(hash_buf, job->prevhash);
+            append_hex(hash_buf, job->merkleroot);
+            append_hex(hash_buf, job->hashreserved);
+            append_hex(hash_buf, job->ntime);
+            append_hex(hash_buf, job->nbits);
+            for (size_t i = 0; i < NONCE_FIELD; i++) hash_buf.push_back(0);
+            for (size_t i = 0; i < en1_bytes.size() && i < NONCE_FIELD; i++) {
+                hash_buf[NONCE_OFFSET + i] = en1_bytes[i];
+            }
+            soln_off = hash_buf.size();
+            const EhParams &p = EH_VARIANTS[current_variant];
+            int total = p.slice_bytes + p.body_bytes;
+            hash_buf.resize(soln_off + total);
+            build_submit_soln(hash_buf.data() + soln_off, current_variant,
+                              notify_sol, en1_bytes, 0);
+            body_off = soln_off + p.slice_bytes;
+            pbaas_embed_blake2b(hash_buf.data(), hash_buf.size());
+            base_nonce = 0;
+        }
+
+        const EhParams &p = EH_VARIANTS[current_variant];
+        int en1n = (int)std::min((size_t)15, en1_bytes.size());
+        size_t tail_off_in_buf = body_off + (p.body_bytes - 15) + en1n;
+        int body_tail_room = std::max(0,
+            std::min(8, p.body_bytes - (p.body_bytes - 15 + en1n)));
+
+        // Build scratch ONCE per job
+        thread_local std::vector<uint8_t> scratch;
+        scratch.assign(hash_buf.begin(), hash_buf.end());
+        pbaas_apply_clear(scratch.data(), scratch.size());
+
+        // Dispatch GPU batch
+        int n_found = gpu_mine_dispatch(
+            scratch.data(), (uint32_t)scratch.size(),
+            (uint32_t)tail_off_in_buf,
+            target.data(),
+            base_nonce,
+            found_nonces.data(),
+            found_hashes.data());
+
+        if (n_found < 0) {
+            fprintf(stderr, "[gpu] dispatch error — falling back to sleep\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
+
+        // Process winners
+        for (int w = 0; w < n_found; w++) {
+            uint64_t nonce_val = found_nonces[w];
+            const uint8_t *gpu_hash = found_hashes.data() + w * 32;
+
+            // Write nonce into hash_buf for submission
+            if (body_tail_room > 0) {
+                memcpy(hash_buf.data() + tail_off_in_buf, &nonce_val, body_tail_room);
+            }
+
+            // Trust-but-verify: recompute on CPU for the first N winners
+            if (verified_so_far < VERIFY_FIRST_N) {
+                if (body_tail_room > 0) {
+                    memcpy(scratch.data() + tail_off_in_buf, &nonce_val, body_tail_room);
+                }
+                uint8_t cpu_hash[32];
+                vh2_cpu.Reset();
+                vh2_cpu.Write(scratch.data(), scratch.size());
+                vh2_cpu.Finalize2b(cpu_hash);
+                if (memcmp(cpu_hash, gpu_hash, 32) != 0) {
+                    verify_failures++;
+                    fprintf(stderr, "[gpu] VERIFY FAIL #%d: nonce=%llx — CPU and GPU disagree\n",
+                            verify_failures, (unsigned long long)nonce_val);
+                    if (verify_failures >= 3) {
+                        fprintf(stderr, "[gpu] aborting GPU mode — too many verify failures\n");
+                        shared->stop.store(true);
+                        return;
+                    }
+                    continue;   // skip submission of this share
+                }
+                verified_so_far++;
+                if (verified_so_far == VERIFY_FIRST_N) {
+                    fprintf(stderr, "[gpu] %d shares CPU-verified, trusting GPU from now\n",
+                            VERIFY_FIRST_N);
+                }
+            }
+
+            // Build submission strings (same as CPU path)
+            char nonce_hex[57];
+            int n28 = (int)NONCE_FIELD - (int)std::min((size_t)4, en1_bytes.size());
+            int en1n4 = (int)std::min((size_t)4, en1_bytes.size());
+            for (int i = 0; i < n28; i++) {
+                sprintf(nonce_hex + i * 2, "%02x", hash_buf[NONCE_OFFSET + en1n4 + i]);
+            }
+            nonce_hex[n28 * 2] = '\0';
+
+            int soln_total = p.slice_bytes + p.body_bytes;
+            std::string soln_hex; soln_hex.reserve(soln_total * 2);
+            char tmp[3];
+            for (int i = 0; i < soln_total; i++) {
+                sprintf(tmp, "%02x", hash_buf[soln_off + i]);
+                soln_hex += tmp;
+            }
+
+            std::lock_guard<std::mutex> lk(shared->submit_mtx);
+            uint64_t share_idx = shared->share_count.fetch_add(1, std::memory_order_relaxed);
+            bool is_dev = (DEV_FEE_PCT > 0) && ((share_idx % (100 / DEV_FEE_PCT)) == 0);
+            const std::string &worker = is_dev ? shared->dev_worker : shared->user_worker;
+
+            uint64_t lg = shared->debug_logs.fetch_add(1, std::memory_order_relaxed);
+            if (lg < 5) {
+                printf("[GPU-SHARE] nonce=%llx worker=%s%s\n",
+                       (unsigned long long)nonce_val, worker.c_str(),
+                       is_dev ? " (dev)" : "");
+            }
+            shared->stratum->submit_with_worker(worker, job->job_id, job->ntime,
+                                                std::string(nonce_hex), soln_hex);
+        }
+
+        base_nonce += batch_size;
+        shared->total_hashes.fetch_add(batch_size, std::memory_order_relaxed);
+    }
+}
+
 static void run_miner(const char *wallet_addr, int n_threads, int debug_zero_bits) {
     if (n_threads < 1) n_threads = 1;
     if (n_threads > 64) n_threads = 64;
@@ -931,8 +1115,6 @@ static void run_miner(const char *wallet_addr, int n_threads, int debug_zero_bit
         stratum.receive();
     }
 
-    printf("[MINING] Starting %d worker thread(s)...\n\n", n_threads);
-
     MinerShared shared;
     shared.stratum = &stratum;
     shared.user_worker = user_worker;
@@ -942,11 +1124,21 @@ static void run_miner(const char *wallet_addr, int n_threads, int debug_zero_bit
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
-    // Spawn workers
     std::vector<std::thread> workers;
-    workers.reserve(n_threads);
-    for (int t = 0; t < n_threads; t++) {
-        workers.emplace_back(worker_loop, t, n_threads, &shared);
+    if (g_use_gpu) {
+        printf("[MINING] Starting GPU mining (batch=%u, kernel=%s)...\n\n",
+               g_gpu_batch_size, g_gpu_kernel_path.c_str());
+        if (gpu_mine_init(g_gpu_kernel_path.c_str(), g_gpu_batch_size) != 0) {
+            fprintf(stderr, "GPU init failed — aborting\n");
+            return;
+        }
+        workers.emplace_back(gpu_worker_loop, &shared);
+    } else {
+        printf("[MINING] Starting %d CPU worker thread(s)...\n\n", n_threads);
+        workers.reserve(n_threads);
+        for (int t = 0; t < n_threads; t++) {
+            workers.emplace_back(worker_loop, t, n_threads, &shared);
+        }
     }
 
     // Main thread: stratum I/O + stats reporting
@@ -982,6 +1174,7 @@ static void run_miner(const char *wallet_addr, int n_threads, int debug_zero_bit
 
     shared.stop.store(true);
     for (auto &w : workers) w.join();
+    if (g_use_gpu) gpu_mine_shutdown();
     printf("\n[MINE] Stopped. Total: %llu hashes in %.0fs\n",
            (unsigned long long)shared.total_hashes.load(),
            now_seconds() - start_time);
@@ -995,19 +1188,30 @@ int main(int argc, char **argv) {
         const char *addr = nullptr;
         int threads = 1;
         int debug_zero_bits = 0;
-        // Parse remaining args: positional [addr] [threads], plus optional
-        // --debug-submit=N flag to force-submit shares ≥N leading zero bits.
+        // Parse remaining args: positional [addr] [threads], plus optional flags.
         int pos = 0;
         for (int i = 2; i < argc; i++) {
             if (strncmp(argv[i], "--debug-submit=", 15) == 0) {
                 debug_zero_bits = atoi(argv[i] + 15);
             } else if (strcmp(argv[i], "--debug-submit") == 0 && i + 1 < argc) {
                 debug_zero_bits = atoi(argv[++i]);
+            } else if (strcmp(argv[i], "--gpu") == 0) {
+                g_use_gpu = true;
+            } else if (strncmp(argv[i], "--gpu-batch=", 12) == 0) {
+                g_gpu_batch_size = (uint32_t)atoi(argv[i] + 12);
+                g_use_gpu = true;
+            } else if (strncmp(argv[i], "--gpu-kernel=", 13) == 0) {
+                g_gpu_kernel_path = argv[i] + 13;
             } else if (pos == 0) {
                 addr = argv[i]; pos++;
             } else if (pos == 1) {
                 threads = atoi(argv[i]); pos++;
             }
+        }
+        if (g_use_gpu && g_gpu_kernel_path.empty()) {
+            // Default: assume metal/verus_hash_v2.metal sits next to the binary,
+            // or in the project's verusminer/metal/ directory.
+            g_gpu_kernel_path = "metal/verus_hash_v2.metal";
         }
         run_miner(addr, threads, debug_zero_bits);
     } else {
