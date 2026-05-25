@@ -132,13 +132,14 @@ extern "C" {
 // Fwd decls — defined below.
 void verus_hash_v2_pre_verusclhash_curbuf(uint8_t *out_curBuf, const uint8_t *data, uint64_t len);
 void verus_hash_v2_pre_verusclhash_key_endpoints(uint8_t *out_first32, uint8_t *out_last32, const uint8_t *data, uint64_t len);
+void verus_hash_v2_custom_finalize(uint8_t *out_hash, uint8_t *out_intermediate, uint8_t *out_curBuf_pre_vclh, const uint8_t *data, uint64_t len);
 
 // One-shot: takes input bytes + length, returns 32-byte hash. The CVerusHashV2
 // object lives on the stack of this call; verusclhasher key buffer is
 // thread-local in the CVerusHashV2 globals.
 void verus_hash_v2_2b_wrap(uint8_t *out_hash, const uint8_t *data, uint64_t len) {
     ensure_vh2_inited();
-    CVerusHashV2 vh2;
+    CVerusHashV2 vh2(SOLUTION_VERUSHHASH_V2_2);
     vh2.Reset();
     vh2.Write(data, (size_t)len);
     vh2.Finalize2b(out_hash);
@@ -155,7 +156,7 @@ void verus_hash_v2_2b_wrap(uint8_t *out_hash, const uint8_t *data, uint64_t len)
 void verus_hash_v2_2b_wrap_traced(uint8_t *out_hash, const uint8_t *data,
                                    uint64_t len, uint8_t *trace) {
     ensure_vh2_inited();
-    CVerusHashV2 vh2;
+    CVerusHashV2 vh2(SOLUTION_VERUSHHASH_V2_2);
     vh2.Reset();
     vh2.Write(data, (size_t)len);
 
@@ -181,8 +182,16 @@ void verus_hash_v2_2b_wrap_traced(uint8_t *out_hash, const uint8_t *data,
     // So curBuf[32..40] IS the intermediate value.
     std::memcpy(trace + 160, curBuf + 32, 8);
 
-    // [168..232] — curBuf PRE-verusclhash (post-FillExtra(curBuf)).
-    verus_hash_v2_pre_verusclhash_curbuf(trace + 168, data, len);
+    // [168..232] — curBuf PRE-verusclhash, captured INSIDE the custom Finalize2b
+    // (matches real Finalize2b's view exactly)
+    uint8_t cf_hash[32], cf_intermediate[8], cf_curBuf[64];
+    verus_hash_v2_custom_finalize(cf_hash, cf_intermediate, cf_curBuf, data, len);
+    std::memcpy(trace + 168, cf_curBuf, 64);
+    // ALSO store custom_finalize's intermediate at trace[232..240] —
+    // this should match Finalize2b's intermediate at trace[160..168].
+    std::memcpy(trace + 232, cf_intermediate, 8);
+    // And whether the custom hash matches the real Finalize2b hash
+    trace[241] = (std::memcmp(cf_hash, out_hash, 32) == 0) ? 1 : 0;
 
     // ALSO compute intermediate via the PORTABLE verusclhash (verus_clhash_portable.cpp)
     // using the SAME inputs the GPU sees. If this matches GPU but differs from
@@ -219,7 +228,7 @@ void verus_hash_v2_2b_wrap_traced(uint8_t *out_hash, const uint8_t *data,
 void verus_hash_v2_pre_verusclhash_curbuf(uint8_t *out_curBuf,
                                           const uint8_t *data, uint64_t len) {
     ensure_vh2_inited();
-    CVerusHashV2 vh2;
+    CVerusHashV2 vh2(SOLUTION_VERUSHHASH_V2_2);
     vh2.Reset();
     vh2.Write(data, (size_t)len);
 
@@ -244,6 +253,60 @@ void verus_hash_v2_pre_verusclhash_curbuf(uint8_t *out_curBuf,
 // post-Write+FillExtra curBuf for 276 blocks. Dumps first 32 + last 32 bytes.
 // This is what the key should be BEFORE verusclhash mutates it — independent
 // of what verusclhasher_key contains after Finalize2b.
+// CUSTOM Finalize2b — replicates CVerusHashV2::Finalize2b body with full
+// visibility into intermediates. If hash matches vh2.Finalize2b, our
+// reconstruction is exact and we can trust the intermediates we capture.
+// Uses the SAME haraka256/512_keyed function pointers + the SAME
+// verusclhasher_key thread_local + the SAME vh2.vclh.
+void verus_hash_v2_custom_finalize(uint8_t *out_hash,
+                                    uint8_t *out_intermediate,  // 8 bytes
+                                    uint8_t *out_curBuf_pre_vclh,  // 64 bytes
+                                    const uint8_t *data, uint64_t len) {
+    ensure_vh2_inited();
+    CVerusHashV2 vh2(SOLUTION_VERUSHHASH_V2_2);
+    vh2.Reset();
+    vh2.Write(data, (size_t)len);
+
+    unsigned char *curBuf = vh2.CurBuffer();
+    size_t curPos = (size_t)len % 32;
+
+    // Step 1: FillExtra((u128 *)curBuf) — same as Finalize2b
+    {
+        size_t pos = curPos;
+        size_t left = 32 - pos;
+        do {
+            size_t L = left > 16 ? 16 : left;
+            std::memcpy(curBuf + 32 + pos, curBuf, L);
+            pos += L; left -= L;
+        } while (left > 0);
+    }
+
+    // Snapshot curBuf pre-verusclhash
+    std::memcpy(out_curBuf_pre_vclh, curBuf, 64);
+
+    // Step 2: GenNewCLKey(curBuf)
+    u128 *key = CVerusHashV2::GenNewCLKey(curBuf);
+
+    // Step 3: intermediate = vclh(curBuf, key) — matches Finalize2b
+    uint64_t intermediate = vh2.vclh(curBuf, key);
+    std::memcpy(out_intermediate, &intermediate, 8);
+
+    // Step 4: FillExtra(&intermediate)
+    {
+        size_t pos = curPos;
+        size_t left = 32 - pos;
+        do {
+            size_t L = left > 8 ? 8 : left;
+            std::memcpy(curBuf + 32 + pos, &intermediate, L);
+            pos += L; left -= L;
+        } while (left > 0);
+    }
+
+    // Step 5: haraka512_keyed
+    (*CVerusHashV2::haraka512KeyedFunction)(out_hash, curBuf,
+        key + vh2.IntermediateTo128Offset(intermediate));
+}
+
 void verus_hash_v2_pre_verusclhash_key_endpoints(uint8_t *out_first32,
                                                   uint8_t *out_last32,
                                                   const uint8_t *data, uint64_t len) {
