@@ -102,11 +102,19 @@ static void pbaas_apply_clear(uint8_t *buf, size_t len) {
 // their dependencies — KEYMASK, generate_cl_key_cached, etc. Forward
 // declarations live in the section below the existing helpers.)
 
-// Realistic VRSC/day estimate per MH/s, based on current network conditions:
-//   Network hashrate ~136 GH/s, block reward ~24 VRSC, 60s blocks → 34,560 VRSC/day
-//   1 MH/s share = 1e6 / 136e9 = 7.35e-6 of network = ~0.254 VRSC/day
-// Approximate — actual yield depends on luck and network drift.
-static constexpr double VRSC_PER_MHS_DAY = 0.254;
+// Fallback VRSC/day estimate per MH/s. The UI overrides this with a live
+// calculation from LuckPool's /verus/stats (so the STATS log line stays
+// approximate, but the user-visible number is correct).
+//
+// Current numbers (May 2026):
+//   Network hashrate ~1.34 TH/s (= 1.34e12 sols/s)
+//   Block reward ~3 VRSC (post-halvings), target 60s blocks → ~4320 VRSC/day
+//   1 MH/s share = 1e6 / 1.34e12 = 7.46e-7 of network = ~0.00322 VRSC/day
+//
+// The earlier value (0.254) was based on a 136 GH/s network — Verus has
+// grown ~10× since then. The STATS log line should be treated as
+// approximate; trust the UI for the real number.
+static constexpr double VRSC_PER_MHS_DAY = 0.0032;
 // Hardcoded VRSC price estimate. Updated occasionally. UI/website should
 // show current price live.
 static constexpr double VRSC_USD_PRICE = 0.60;

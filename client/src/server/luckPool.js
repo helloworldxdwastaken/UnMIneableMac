@@ -70,9 +70,10 @@ export async function fetchSettings(address) {
 }
 
 // Pool-wide stats — includes `marketStats.price_usd` and network info.
-// Shape (from live observation):
-//   { poolStats: { hashrate, minerCount, ... },
-//     networkStats: { height, ... },
+// Shape (from live observation 2026-05):
+//   { poolStats: { hashrate, hashrateSols, minerCount, blocksLast24,
+//                  lastBlockReward, ... },
+//     networkStats: { height, sols, hashrateString, diff, ... },
 //     marketStats: { price_usd, price_btc, percent_change_24h, ... } }
 let _poolStatsCache = { at: 0, data: null }
 export async function fetchPoolStats({ maxAgeMs = 60_000 } = {}) {
@@ -94,16 +95,64 @@ export async function fetchVrscPriceUSD() {
   return (typeof p === 'number' && p > 0) ? p : VRSC_USD_FALLBACK
 }
 
+// Live network parameters used to compute realistic VRSC/day estimates.
+// Returns:
+//   { networkSols, blockReward, blockTimeSec, priceUSD }
+// `networkSols` is the network hashrate in sols/sec (= ~ MH/s × 1e6 for VerusHash).
+// `blockReward` is the LAST block reward observed (VRSC). For VerusHash 2.2
+// this is ~3 VRSC right now (post-halvings).
+// `blockTimeSec` is the avg minutes-to-block × 60. Falls back to 60 (the
+// Verus target). For the realistic estimate we use the AVG, not the target.
+const NETWORK_FALLBACKS = {
+  networkSols: 1.34e12,   // ~1.34 TS/s, current observation
+  blockReward: 3.0,        // VRSC per block
+  blockTimeSec: 60,        // target
+  priceUSD: VRSC_USD_FALLBACK,
+}
+export async function fetchNetworkParams() {
+  const stats = await fetchPoolStats()
+  const network = stats?.networkStats
+  const pool = stats?.poolStats
+  return {
+    networkSols: (typeof network?.sols === 'number' && network.sols > 0)
+      ? network.sols : NETWORK_FALLBACKS.networkSols,
+    blockReward: (typeof pool?.lastBlockReward === 'number' && pool.lastBlockReward > 0)
+      ? pool.lastBlockReward : NETWORK_FALLBACKS.blockReward,
+    // avgBlockTimeMin is the pool's OBSERVED block time, but for the network-
+    // wide estimate the target (60s) is more representative. We use 60s.
+    blockTimeSec: NETWORK_FALLBACKS.blockTimeSec,
+    priceUSD: (typeof stats?.marketStats?.price_usd === 'number' && stats.marketStats.price_usd > 0)
+      ? stats.marketStats.price_usd : NETWORK_FALLBACKS.priceUSD,
+  }
+}
+
+// Compute realistic VRSC/day given your hashrate in HASHES/SEC (NOT MH/s).
+// Formula: (yourHashes/sec / networkHashes/sec) × (86400 / blockTimeSec) × blockReward
+// Returns { vrscPerDay, usdPerDay, networkSols, blockReward, priceUSD }.
+export async function estimateVrscPerDay(yourHashesPerSec) {
+  const np = await fetchNetworkParams()
+  const blocksPerDay = 86400 / np.blockTimeSec
+  const yourShare = yourHashesPerSec / np.networkSols
+  const vrscPerDay = yourShare * blocksPerDay * np.blockReward
+  return {
+    vrscPerDay,
+    usdPerDay: vrscPerDay * np.priceUSD,
+    networkSols: np.networkSols,
+    blockReward: np.blockReward,
+    priceUSD: np.priceUSD,
+  }
+}
+
 // Single-shot combined fetch — pulls everything in parallel and returns a
 // flat object the UI can spread into state. Missing endpoints are silently
 // dropped (set to undefined) so the UI just won't render those fields.
 export async function fetchLuckPoolLive(address) {
   if (!address) return null
-  const [earningStats, miner, settings, priceUSD] = await Promise.all([
+  const [earningStats, miner, settings, networkParams] = await Promise.all([
     fetchEarningStats(address),
     fetchMiner(address),
     fetchSettings(address),
-    fetchVrscPriceUSD(),
+    fetchNetworkParams(),
   ])
   const minerOk = miner && !miner.error
   return {
@@ -118,10 +167,13 @@ export async function fetchLuckPoolLive(address) {
     // Account config
     minPayment: settings?.minPayment ?? 0.0001,
     minerIP: settings?.minerIP ?? null,
-    // Live VRSC price in USD, pulled from LuckPool /verus/stats every
-    // ~60s. Drives the "$X.XX/day" estimates on the mining page so we
-    // don't ship a stale hardcoded value.
-    priceUSD: priceUSD,
+    // Network params for live VRSC/day estimate. The miner C++ used to compute
+    // this with a hardcoded constant (VRSC_PER_MHS_DAY = 0.254) based on a
+    // 136 GH/s network — wildly off today (network is ~1.34 TH/s now).
+    networkSols:   networkParams.networkSols,
+    blockReward:   networkParams.blockReward,
+    blockTimeSec:  networkParams.blockTimeSec,
+    priceUSD:      networkParams.priceUSD,
     // Timestamp for cache busting in the UI
     fetchedAt: Date.now(),
   }

@@ -29,6 +29,22 @@
   $: currentHashrate = $hashrates[$hashrates.length - 1]
   $: isVerus = $form.algorithm === 'verushash'
 
+  // Compute realistic VRSC/day estimate LIVE from network params + current
+  // hashrate. The C++ miner's STATS line uses a stale constant that's ~250×
+  // too high (assumes 136 GH/s network when it's now ~1.34 TH/s). Override
+  // that value here.
+  //
+  // Formula: (your_hashes_per_sec / network_sols) × (86400 / blockTimeSec) × blockReward
+  $: liveVrscPerDay = (() => {
+    if (!isVerus || !currentHashrate || !poolLive?.networkSols) return undefined
+    const yourSols = currentHashrate                    // hashes/sec (== sols/sec for VerusHash)
+    const blocksPerDay = 86400 / (poolLive.blockTimeSec || 60)
+    const yourShare = yourSols / poolLive.networkSols
+    return yourShare * blocksPerDay * (poolLive.blockReward || 3)
+  })()
+  $: liveUsdPerDay = (liveVrscPerDay !== undefined && poolLive?.priceUSD)
+    ? liveVrscPerDay * poolLive.priceUSD : undefined
+
   miningLogs.subscribe((logs) => {
     dialogLogsData = logs
     const lastLog = logs[logs.length - 1]
@@ -228,15 +244,19 @@
           {/if}
         {/if}
 
-        <!-- Estimate from current hashrate (uses live VRSC price) -->
-        {#if liveStats.vrscPerDay !== undefined}
+        <!-- Estimate from current hashrate × live network params from LuckPool /stats.
+             This OVERRIDES the C++ miner's STATS line vrscPerDay, which uses a
+             stale constant from when the Verus network was ~136 GH/s. -->
+        {#if liveVrscPerDay !== undefined}
           <div class="info-chip">
             <div class="chip-label">Estimated / day · {liveStats.threads || '?'} threads</div>
             <div class="chip-value mono">
-              {liveStats.vrscPerDay.toFixed(4)} VRSC
-              <span style="color:var(--green);font-weight:400">
-                ≈ ${((poolLive?.priceUSD || 0.93) * liveStats.vrscPerDay).toFixed(3)}
-              </span>
+              {liveVrscPerDay.toFixed(6)} VRSC
+              {#if liveUsdPerDay !== undefined}
+                <span style="color:var(--green);font-weight:400">
+                  ≈ ${liveUsdPerDay.toFixed(4)}
+                </span>
+              {/if}
             </div>
           </div>
         {/if}
