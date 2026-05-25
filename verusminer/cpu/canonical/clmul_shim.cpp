@@ -105,3 +105,169 @@ uint64_t verusclhash_sv2_2_wrap(uint8_t *key, const uint8_t *input, uint64_t key
 }
 
 } // extern "C"
+
+// ============================================================
+// CVerusHashV2 Reset + Write + Finalize2b — the full hash mining uses.
+// One-shot initializer + a wrapper Swift can call directly.
+// ============================================================
+#include "verus_hash.h"
+
+static bool g_vh2_inited = false;
+static void ensure_vh2_inited() {
+    if (!g_vh2_inited) {
+        CVerusHashV2::init();
+        g_vh2_inited = true;
+    }
+}
+
+// Need haraka256_port + load_constants_port from haraka_portable.c
+extern "C" void haraka256_port(unsigned char *out, const unsigned char *in);
+extern "C" void load_constants_port();
+// Both verusclhash variants — we want to compare optimized vs portable
+extern "C" uint64_t verusclhash_sv2_2(void *random, const unsigned char buf[64],
+                                       uint64_t keyMask, __m128i **pMoveScratch);
+
+extern "C" {
+
+// Fwd decls — defined below.
+void verus_hash_v2_pre_verusclhash_curbuf(uint8_t *out_curBuf, const uint8_t *data, uint64_t len);
+void verus_hash_v2_pre_verusclhash_key_endpoints(uint8_t *out_first32, uint8_t *out_last32, const uint8_t *data, uint64_t len);
+
+// One-shot: takes input bytes + length, returns 32-byte hash. The CVerusHashV2
+// object lives on the stack of this call; verusclhasher key buffer is
+// thread-local in the CVerusHashV2 globals.
+void verus_hash_v2_2b_wrap(uint8_t *out_hash, const uint8_t *data, uint64_t len) {
+    ensure_vh2_inited();
+    CVerusHashV2 vh2;
+    vh2.Reset();
+    vh2.Write(data, (size_t)len);
+    vh2.Finalize2b(out_hash);
+}
+
+// Trace variant: captures intermediate state to localize GPU divergence.
+// trace layout (256 bytes, matches GPU layout):
+//   [  0.. 64)  curBuf after Write
+//   [ 64.. 96)  key[0..32] after GenNewCLKey block 0
+//   [ 96..160)  curBuf after FillExtra(curBuf)
+//   [160..168)  intermediate u64
+//   [168..232)  curBuf right before final haraka512_keyed
+//   [240..241)  curPos after Write (moved out of the [224..256] zone)
+void verus_hash_v2_2b_wrap_traced(uint8_t *out_hash, const uint8_t *data,
+                                   uint64_t len, uint8_t *trace) {
+    ensure_vh2_inited();
+    CVerusHashV2 vh2;
+    vh2.Reset();
+    vh2.Write(data, (size_t)len);
+
+    unsigned char *curBuf = vh2.CurBuffer();
+    size_t curPos = (size_t)len % 32;
+
+    // Checkpoint 1: curBuf after Write
+    std::memcpy(trace + 0, curBuf, 64);
+    trace[240] = (uint8_t)curPos;
+
+    // Just run Finalize2b — after it completes we can grab the key and
+    // re-derive the intermediate from the key+curBuf state if needed.
+    vh2.Finalize2b(out_hash);
+
+    // Compute PRE-verusclhash key endpoints by re-chaining haraka256 from
+    // scratch. verusclhasher_key.get() after Finalize2b is POST-mutation —
+    // unreliable for chain comparison.
+    verus_hash_v2_pre_verusclhash_key_endpoints(trace + 64, trace + 96, data, len);
+
+    // curBuf after Finalize2b retains the LAST FillExtra state:
+    //   curBuf[0..32]  = pre-Finalize2b curBuf prefix
+    //   curBuf[32..40] = intermediate u64 (LE), tiled 4× through [32..64]
+    // So curBuf[32..40] IS the intermediate value.
+    std::memcpy(trace + 160, curBuf + 32, 8);
+
+    // [168..232] — curBuf PRE-verusclhash (post-FillExtra(curBuf)).
+    verus_hash_v2_pre_verusclhash_curbuf(trace + 168, data, len);
+
+    // ALSO compute intermediate via the PORTABLE verusclhash (verus_clhash_portable.cpp)
+    // using the SAME inputs the GPU sees. If this matches GPU but differs from
+    // the optimized intermediate at trace[160..168], the CPU optimized vs
+    // portable implementations diverge — a CPU-side bug, not GPU.
+    {
+        load_constants_port();
+        unsigned char preverus_curBuf[64];
+        verus_hash_v2_pre_verusclhash_curbuf(preverus_curBuf, data, len);
+
+        // Build the full key via haraka256_port chain
+        static thread_local unsigned char portKey[17024];
+        unsigned char src_chain[32];
+        unsigned char tmp_chain[32];
+        std::memcpy(src_chain, preverus_curBuf, 32);
+        for (int b = 0; b < 276; b++) {
+            haraka256_port(tmp_chain, src_chain);
+            std::memcpy(portKey + b * 32, tmp_chain, 32);
+            std::memcpy(src_chain, tmp_chain, 32);
+        }
+        // Refresh copy
+        std::memcpy(portKey + 8832, portKey, 8192);
+
+        __m128i *scratch_port[80];
+        __m128i **scratchPtr_port = scratch_port;
+        uint64_t portInt = verusclhash_sv2_2_port(portKey, preverus_curBuf, 8191, scratchPtr_port);
+        std::memcpy(trace + 200, &portInt, 8);    // CPU PORTABLE intermediate at trace[200..208]
+    }
+}
+
+// Compute what curBuf SHOULD be right before verusclhash on CPU, by manually
+// doing Reset+Write+FillExtra(curBuf). Returns the post-FillExtra curBuf state.
+// Used to verify the GPU wrapper produces the same input to verusclhash.
+void verus_hash_v2_pre_verusclhash_curbuf(uint8_t *out_curBuf,
+                                          const uint8_t *data, uint64_t len) {
+    ensure_vh2_inited();
+    CVerusHashV2 vh2;
+    vh2.Reset();
+    vh2.Write(data, (size_t)len);
+
+    unsigned char *curBuf = vh2.CurBuffer();
+    size_t curPos = (size_t)len % 32;
+
+    // FillExtra(curBuf) — replicate the template
+    {
+        size_t pos = curPos;
+        size_t left = 32 - curPos;
+        do {
+            size_t L = left > 16 ? 16 : left;
+            std::memcpy(curBuf + 32 + pos, curBuf, L);
+            pos += L; left -= L;
+        } while (left > 0);
+    }
+
+    std::memcpy(out_curBuf, curBuf, 64);
+}
+
+// Compute PRE-verusclhash key on CPU by chaining haraka256_port from
+// post-Write+FillExtra curBuf for 276 blocks. Dumps first 32 + last 32 bytes.
+// This is what the key should be BEFORE verusclhash mutates it — independent
+// of what verusclhasher_key contains after Finalize2b.
+void verus_hash_v2_pre_verusclhash_key_endpoints(uint8_t *out_first32,
+                                                  uint8_t *out_last32,
+                                                  const uint8_t *data, uint64_t len) {
+    // CVerusHashV2::init() on Apple Silicon calls load_constants() (the AES-NI
+    // variant) but NOT load_constants_port(). haraka256_port reads from a
+    // separate `rc[]` global that load_constants_port populates. If we call
+    // haraka256_port without first calling load_constants_port, we read
+    // uninitialized memory and get garbage.
+    load_constants_port();
+
+    unsigned char curBuf[64];
+    verus_hash_v2_pre_verusclhash_curbuf(curBuf, data, len);
+
+    // Chain haraka256_port 276 times, only keeping first and last 32 bytes
+    unsigned char src[32];
+    unsigned char tmp[32];
+    std::memcpy(src, curBuf, 32);
+
+    for (int b = 0; b < 276; b++) {
+        haraka256_port(tmp, src);
+        if (b == 0) std::memcpy(out_first32, tmp, 32);
+        if (b == 275) std::memcpy(out_last32, tmp, 32);
+        std::memcpy(src, tmp, 32);
+    }
+}
+
+} // extern "C"
