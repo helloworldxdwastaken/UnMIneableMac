@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<title>Why every share was rejected — UnminerMac blog</title>
+<meta name="description" content="The pool said 'low difficulty share' on every submission. The algorithm was right; the preprocessing wasn't. How a known-block test ruled out the obvious causes and pointed at PBaaS.">
+<link rel="icon" type="image/png" href="../logo.png">
+<link rel="stylesheet" href="../blog.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="../index.html" class="brand">
+      <img src="../logo.png" alt="UnminerMac">
+      UnminerMac
+    </a>
+    <div class="links">
+      <a href="../index.html#ranking">Best coins</a>
+      <a href="../index.html#verus-calc">VRSC calc</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../research.html">Research</a>
+      <a href="../blog.html" class="active">Blog</a>
+      <a href="https://github.com/helloworldxdwastaken/UnminerMac" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<article>
+  <div class="container">
+    <a class="back-link" href="../blog.html">← All posts</a>
+
+    <div class="part-meta"><span class="num">Part 1 of 5</span> · debugging · UnminerMac v0.18</div>
+    <h1>Why every share was rejected</h1>
+    <p class="lede">The pool said <code>low difficulty share</code> on every submission. The algorithm was right; the preprocessing wasn't. Three days of hunting led to a single missing <code>blake2b</code> call.</p>
+    <p class="meta">Verox Studio engineering notes · M5 (10-core, 4P+6E, macOS Tahoe 26.4)</p>
+
+    <p>UnminerMac v0.18 shipped the first arm64-native VerusHash 2.2 miner for Apple Silicon. The CPU benchmark looked great — <strong>5.77 MH/s on 4 P-cores</strong>. Address validation worked. The stratum connection to <code>na.luckpool.net:3956</code> was clean. Mining started, hashrate climbed, the miner happily reported finding "valid" shares.</p>
+
+    <p>The pool accepted exactly zero of them.</p>
+
+    <p>The error from the pool: <code>"low difficulty share"</code>. Which technically tells you what's wrong — the hash you submitted doesn't actually meet the difficulty target — but doesn't tell you <strong>why</strong> your hash is different from the pool's hash for the same nonce. And the difference is what we needed to figure out.</p>
+
+    <p>The first hypothesis was the obvious one: we were using the wrong reference implementation. There are at least three VerusHash 2.2 implementations floating around in mining code:</p>
+
+    <ul>
+      <li><strong>hellcatz/verushash-node</strong> — a popular NPM package, simple, works for some pools</li>
+      <li><strong>VerusCoin/verus-coin reference</strong> — the canonical one shipped with the wallet/daemon</li>
+      <li><strong>Various forks of mining pools</strong> — each with subtle deviations</li>
+    </ul>
+
+    <p>We started with the first because it had the cleanest API and shipped pre-built. The pool used the second.</p>
+
+    <h3>The first hint: a known block test</h3>
+
+    <p>To prove we had the wrong algorithm, we built a <strong>known-block-test harness</strong>: take a real Verus block from the chain (block <code>4080279</code>, hash <code>00000000000069f6d238c07844196157c11808c12239d8265a6afe70652993a0</code>), feed its header through our local hasher, see if we get the same output.</p>
+
+    <p>We got something different. The output had the right structure (32 bytes, lots of leading zeros) but every byte was wrong. That ruled out endianness drift or solution-padding bugs — those usually look like "first 16 bytes wrong, rest right" or vice versa. This was every-byte-wrong, which means the hash function itself was computing something different.</p>
+
+    <p>Switching to the canonical <code>CVerusHashV2</code> from the reference repo took an evening of build-system wrangling. The minor speedbump was that VerusCoin's source uses x86-64 intrinsics (<code>_mm_clmulepi64_si128</code>, AES-NI), and we needed to swap in <code>sse2neon.h</code> to map those to ARMv8 NEON crypto extensions.</p>
+
+    <p>After that swap, the known-block test passed. Same block in, same hash out. Verified against the chain.</p>
+
+    <p>And the pool still rejected every share.</p>
+
+    <div class="callout warn">
+      <p>The takeaway after 8 hours of work: the algorithm was correct against the chain, but <em>still</em> didn't match what the pool computed. That meant the pool was doing additional preprocessing on the input that we hadn't replicated. Part 2 is finding it.</p>
+    </div>
+
+    <div class="pager">
+      <span class="placeholder"></span>
+      <a class="next" href="02-luckpool-pipeline.html">
+        <span class="pager-dir">Next →</span>
+        <span class="pager-title">Reverse-engineering LuckPool's hash pipeline</span>
+      </a>
+    </div>
+  </div>
+</article>
+
+<footer>
+  <div class="container">
+    <p>UnminerMac · Verox Studio · MIT licensed · built on a quiet M5</p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<title>Reverse-engineering LuckPool's hash pipeline — UnminerMac blog</title>
+<meta name="description" content="VerusHash on PBaaS chains doesn't hash the raw block header. It hashes a canonically-cleared version with a specific blake2b('VerusDefaultHash', …) digest embedded at a specific offset.">
+<link rel="icon" type="image/png" href="../logo.png">
+<link rel="stylesheet" href="../blog.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="../index.html" class="brand">
+      <img src="../logo.png" alt="UnminerMac">
+      UnminerMac
+    </a>
+    <div class="links">
+      <a href="../index.html#ranking">Best coins</a>
+      <a href="../index.html#verus-calc">VRSC calc</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../research.html">Research</a>
+      <a href="../blog.html" class="active">Blog</a>
+      <a href="https://github.com/helloworldxdwastaken/UnminerMac" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<article>
+  <div class="container">
+    <a class="back-link" href="../blog.html">← All posts</a>
+
+    <div class="part-meta"><span class="num">Part 2 of 5</span> · reverse-engineering · UnminerMac v0.18</div>
+    <h1>Reverse-engineering LuckPool's hash pipeline</h1>
+    <p class="lede">VerusHash on PBaaS chains doesn't hash the raw block header. It hashes a canonically-cleared version that has a specific <code>blake2b("VerusDefaultHash", …)</code> digest embedded at a specific offset. Here's how we found that out.</p>
+    <p class="meta">Verox Studio engineering notes · M5 (10-core, 4P+6E, macOS Tahoe 26.4)</p>
+
+    <p>So the "right algorithm" still produced the "wrong hash" for the pool's purposes. That meant the algorithm wasn't the only thing the pool was doing — there was preprocessing on the input we hadn't replicated.</p>
+
+    <p>LuckPool's miner stats page (<code>luckpool.net/verus/miner.html</code>) ships some inline JavaScript and a few minified .js bundles. Reading those was how we found the live stats API endpoints (<code>/verus/earningstats/&lt;addr&gt;</code>, <code>/verus/miner/&lt;addr&gt;</code>, etc.) that we now use for the live earnings display. But the more interesting find was a single line buried in the stratum handler:</p>
+
+    <pre><code>// serializeHeader: build the 196-byte preHeader
+//   buf[0..4]    = version (LE)
+//   buf[4..36]   = prevHash
+//   buf[36..68]  = merkleRoot
+//   buf[68..100] = finalSaplingRoot
+//   buf[100..104]= timestamp (LE)
+//   buf[104..108]= nBits (LE)
+//   buf[108..140]= nonce (32 bytes from job + en1+en2)
+//   buf[140..143]= solution length (varint 0x80 0x09 0x40)
+//   buf[143..196]= solution[0..53] (the prefix the pool tells us)
+//
+// blake2b("VerusDefaultHash", preHeader) → 32 bytes
+// → embedded at buf[124..156] of the canonical clear region
+// → that's the actual input to CVerusHashV2.Write</code></pre>
+
+    <div class="callout">
+      <p><strong>The missing step: <em>PBaaS preprocessing.</em></strong> VerusHash 2.2 on a PBaaS chain doesn't hash the raw block header. It hashes a <strong>canonically-cleared</strong> version of the header that has had a specific <code>blake2b</code> digest embedded into a specific byte range.</p>
+    </div>
+
+    <p>The <code>blake2b</code> isn't standard SHA-3 blake — it's specifically <code>blake2b</code> with the personalization string <code>"VerusDefaultHash"</code> (a libsodium feature). The input to that blake is the 196-byte "preHeader" assembled from the stratum job. The output is 32 bytes, which get embedded at byte offset 124 in a 299-byte buffer. That buffer is then partially zeroed in specific ranges (the "canonical clear" — <code>buf[4..99]</code>, <code>buf[104..107]</code>, <code>buf[108..139]</code>, <code>buf[151..214]</code>) before being fed to <code>CVerusHashV2.Write</code>.</p>
+
+    <p>Once we wired up <code>libsodium</code> for the personalized blake2b, computed it on every nonce attempt, and mirrored the canonical clear, the pool started accepting shares. We watched the wallet balance tick up on <code>luckpool.net/verus/miner.html</code> for the first time.</p>
+
+    <p>Total wall-clock time to find this: about two days. Total code changes: maybe 30 lines. The win was figuring out <em>where</em> the 30 lines belonged.</p>
+
+    <div class="callout good">
+      <p>Shares accepting. Mining works. Next question: why is the hashrate so terrible? Part 3 finds a 3.8× speedup hiding in plain sight.</p>
+    </div>
+
+    <div class="pager">
+      <a class="prev" href="01-shares-rejected.html">
+        <span class="pager-dir">← Previous</span>
+        <span class="pager-title">Why every share was rejected</span>
+      </a>
+      <a class="next" href="03-cpu-speedup.html">
+        <span class="pager-dir">Next →</span>
+        <span class="pager-title">The 3.8× speedup hiding in the inner loop</span>
+      </a>
+    </div>
+  </div>
+</article>
+
+<footer>
+  <div class="container">
+    <p>UnminerMac · Verox Studio · MIT licensed · built on a quiet M5</p>
+  </div>
+</footer>
+
+</body>
+</html>

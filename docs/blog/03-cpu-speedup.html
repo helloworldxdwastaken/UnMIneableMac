@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<title>The 3.8× speedup hiding in the inner loop — UnminerMac blog</title>
+<meta name="description" content="The miner ran at 1.04 MH/s. Per-job work was being redone per-nonce. Splitting 'what changes per iteration' from 'what's constant for the duration' took the same M5 from 1.04 to 3.94 MH/s.">
+<link rel="icon" type="image/png" href="../logo.png">
+<link rel="stylesheet" href="../blog.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="../index.html" class="brand">
+      <img src="../logo.png" alt="UnminerMac">
+      UnminerMac
+    </a>
+    <div class="links">
+      <a href="../index.html#ranking">Best coins</a>
+      <a href="../index.html#verus-calc">VRSC calc</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../research.html">Research</a>
+      <a href="../blog.html" class="active">Blog</a>
+      <a href="https://github.com/helloworldxdwastaken/UnminerMac" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<article>
+  <div class="container">
+    <a class="back-link" href="../blog.html">← All posts</a>
+
+    <div class="part-meta"><span class="num">Part 3 of 5</span> · performance · UnminerMac v0.19</div>
+    <h1>The 3.8× speedup hiding in the inner loop</h1>
+    <p class="lede">Once shares were accepting, the miner ran at 1.04 MH/s. Per-job work was being redone per-nonce. Splitting "what changes per iteration" from "what's constant for the duration" took the same M5 from 1.04 to 3.94 MH/s.</p>
+    <p class="meta">Verox Studio engineering notes · M5 (10-core, 4P+6E, macOS Tahoe 26.4)</p>
+
+    <p>With shares accepting, we started actually mining. The reported hashrate was <strong>1.04 MH/s on 7 threads</strong>. That's terrible — about 150 KH/s per thread.</p>
+
+    <p>The v0.18 release notes had reported 5.77 MH/s on 4 threads (~1.44 MH/s/thread). What had we lost?</p>
+
+    <p>The answer turned out to be: <strong>everything we'd just added in part 2 was being recomputed on every nonce iteration</strong>, even though it didn't depend on the nonce.</p>
+
+    <p>The PBaaS pipeline now looked like this per iteration:</p>
+
+    <pre><code>for (uint64_t nonce = start; nonce &lt; end; nonce++) {
+    // build 196-byte preHeader with nonce embedded
+    // run blake2b("VerusDefaultHash", preHeader, 32)
+    // memcpy blake output to buf[124..156]
+    // memcpy nonce to buf[108..140]
+    // canonical clear: zero out [4..99], [104..107], [108..139], [151..214]
+    // CVerusHashV2.Reset()
+    // CVerusHashV2.Write(buf, 299) — runs the full VerusHash pipeline
+    // compare hash to target, submit if good
+}</code></pre>
+
+    <p>The thing is, <strong>almost none of that varies with the nonce except for 8 bytes</strong>. The job is constant for the duration. The blake2b input changes by 8 bytes per iteration (the nonce counter inside it), which means the blake output also changes — but the rest of the 196-byte preHeader is constant.</p>
+
+    <p>And inside <code>CVerusHashV2</code>, there's another layer: the <strong>verusclhash key cache</strong>. The first call to <code>.Write()</code> with a given buffer seeds a key derived from the buffer's leading bytes. Subsequent calls with the same prefix reuse the cached key. We were destroying that cache every iteration by calling <code>.Reset()</code>.</p>
+
+    <p>The fix was to recognize what's <strong>per-job</strong> vs what's <strong>per-nonce</strong>:</p>
+
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Operation</th><th>Per job</th><th>Per nonce</th></tr></thead>
+      <tbody>
+        <tr><td>Build the 196-byte preHeader skeleton</td><td>✓</td><td></td></tr>
+        <tr><td>Initialize blake2b state with personalization</td><td>✓</td><td></td></tr>
+        <tr><td>Pre-compute CVerusHashV2 key from the canonical buffer prefix</td><td>✓</td><td></td></tr>
+        <tr><td>Memcpy the nonce into the partial-fill region of the scratch buffer</td><td></td><td>✓ (8 bytes)</td></tr>
+        <tr><td>Run the VerusHash 2.2 pipeline (haraka512 + clhash + haraka512_keyed × 16 rounds)</td><td></td><td>✓ (unavoidable)</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>The inner loop went from this:</p>
+
+    <pre><code>// Before: ~960ns per iteration on M5 P-core
+for (...) {
+    build_preheader(...);          // ~120ns
+    blake2b_VerusDefault(...);     // ~280ns
+    memcpy + canonical_clear(...); // ~200ns
+    vh2.Reset();                   // ~40ns
+    vh2.Write(scratch, 299);       // ~320ns (incl. key cache rebuild)
+}</code></pre>
+
+    <p>To this:</p>
+
+    <pre><code>// After: ~250ns per iteration on M5 P-core
+// Per-job setup runs once:
+build_preheader_template(...);
+preseed_clhash_key(...);
+
+// Per-nonce hot loop:
+for (uint64_t n = 0; n &lt; 50000; n++) {
+    // ONE mutation: the 8-byte counter in the partial fill.
+    if (body_tail_room &gt; 0) {
+        memcpy(scratch_tail, &amp;local_nonce, body_tail_room);
+        memcpy(submit_tail,  &amp;local_nonce, body_tail_room);
+    }
+    vh2.Reset();
+    vh2.Write(scratch.data(), scratch.size());
+    vh2.Finalize2b(hash);
+    // compare + maybe submit
+    local_nonce += n_threads;
+}</code></pre>
+
+    <div class="callout good">
+      <p><strong>Result on the same M5, same pool, same job:</strong></p>
+      <p><code>[STATS] 1.04 MH/s | 7 threads</code> → <code>[STATS] 3.94 MH/s | 7 threads</code></p>
+      <p>3.8× speedup. Per-thread throughput went from ~150 KH/s to ~563 KH/s. The bottleneck moved from "memory churn + crypto setup" to actually-running-the-hash, which is what should be the bottleneck.</p>
+    </div>
+
+    <p>The lesson is one of those things that sounds obvious in retrospect: <strong>profile your hot loop before adding code to it</strong>. We'd added the PBaaS preprocessing in part 2 to fix a correctness bug, and the correctness fix worked, but the work-per-iteration ballooned without anyone noticing because we were chasing accepted shares, not hash-per-second.</p>
+
+    <div class="pager">
+      <a class="prev" href="02-luckpool-pipeline.html">
+        <span class="pager-dir">← Previous</span>
+        <span class="pager-title">Reverse-engineering LuckPool's hash pipeline</span>
+      </a>
+      <a class="next" href="04-metal-primitives.html">
+        <span class="pager-dir">Next →</span>
+        <span class="pager-title">Five Metal primitives, byte-perfect</span>
+      </a>
+    </div>
+  </div>
+</article>
+
+<footer>
+  <div class="container">
+    <p>UnminerMac · Verox Studio · MIT licensed · built on a quiet M5</p>
+  </div>
+</footer>
+
+</body>
+</html>

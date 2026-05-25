@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<title>Five Metal primitives, byte-perfect — UnminerMac blog</title>
+<meta name="description" content="Porting Haraka256/512, clmul64, mulhrs, and precompReduction64 to Metal Shading Language. Validated against ~2,100 test vectors. T-table AES, the carryless multiply Metal doesn't have, and the GF reduction.">
+<link rel="icon" type="image/png" href="../logo.png">
+<link rel="stylesheet" href="../blog.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="../index.html" class="brand">
+      <img src="../logo.png" alt="UnminerMac">
+      UnminerMac
+    </a>
+    <div class="links">
+      <a href="../index.html#ranking">Best coins</a>
+      <a href="../index.html#verus-calc">VRSC calc</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../research.html">Research</a>
+      <a href="../blog.html" class="active">Blog</a>
+      <a href="https://github.com/helloworldxdwastaken/UnminerMac" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<article>
+  <div class="container">
+    <a class="back-link" href="../blog.html">← All posts</a>
+
+    <div class="part-meta"><span class="num">Part 4 of 5</span> · GPU primitives · UnminerMac v0.19</div>
+    <h1>Five Metal primitives, byte-perfect</h1>
+    <p class="lede">Porting Haraka256/512, clmul64, mulhrs, and precompReduction64 to Metal Shading Language, validated against ~2,100 test vectors. T-table AES, the carryless multiply Metal doesn't have, and the GF(2<sup>64</sup>) reduction that closes the pipeline.</p>
+    <p class="meta">Verox Studio engineering notes · M5 (10-core, 4P+6E, macOS Tahoe 26.4)</p>
+
+    <p>With CPU mining working and accepting shares, the next question was GPU acceleration. Apple Silicon GPUs are interesting for crypto mining because they share unified memory with the CPU (no PCIe roundtrip), they have a lot of compute (~3.85 TFLOPS on M5), and almost no one has tried to use them for proof-of-work because Apple doesn't sell to miners.</p>
+
+    <p>The plan: port VerusHash 2.2's five cryptographic building blocks to Metal Shading Language, validate each one byte-perfect against the CPU reference, then integrate them into a single mining kernel.</p>
+
+    <h2>haraka256 — the explicit AES round that wouldn't validate</h2>
+
+    <p>Haraka is a low-latency permutation built from AES rounds. <code>haraka256</code> processes 32-byte inputs through 5 outer rounds, each containing 4 AES sub-rounds. We wrote a "by hand" Metal kernel that implemented <code>SubBytes + ShiftRows + MixColumns + AddRoundKey</code> as separate operations. It produced wrong output.</p>
+
+    <p>We debugged for hours. We thought the round constants were in the wrong byte order. They weren't. We thought ShiftRows was rotating the wrong direction. It wasn't. We thought MixColumns had a sign-extension bug in the <code>gf2</code> doubling. It didn't. Every individual operation tested correctly in isolation, but composed in the round they didn't.</p>
+
+    <p>The eventual fix was to throw away the explicit round implementation and adopt the <strong>T-table form</strong> from the canonical CPU reference. T-tables fuse <code>SubBytes</code>, <code>ShiftRows</code>, and <code>MixColumns</code> into a single 256-entry lookup keyed by the input byte and the output row. The CPU reference uses them because they're fast; we adopted them because there's <strong>one fused operation to get right instead of three separate ones to compose</strong>.</p>
+
+    <pre><code>// One AES round in T-table form: 16 lookups + 12 XORs + 4 RK XORs.
+inline void aesenc_tt(thread uint *s, constant uint *rk) {
+    uint x0 = s[0], x1 = s[1], x2 = s[2], x3 = s[3];
+    uint y0, y1, y2, y3;
+
+    y0 = t_row((uchar)( x0        &amp; 0xff), 0);
+    y1 = t_row((uchar)( x1        &amp; 0xff), 0);
+    // ... 14 more lookups for rows 1, 2, 3 with shift ...
+
+    s[0] = y0 ^ rk[0]; s[1] = y1 ^ rk[1];
+    s[2] = y2 ^ rk[2]; s[3] = y3 ^ rk[3];
+}</code></pre>
+
+    <p>Byte-perfect on the first try. Test vector from the Haraka v2 paper (<code>8027ccb87949774b…</code>) matched on the GPU.</p>
+
+    <h2>haraka512 — same template, twice as wide</h2>
+
+    <p>With the T-table approach validated for 256-bit, scaling to 512-bit was a clean port: 4 halves of 16 bytes instead of 2, 4 round constants per sub-round instead of 2, the <code>MIX4</code> mixing layer instead of <code>MIX2</code>, and a 32-byte <code>TRUNCSTORE</code> output instead of 32-byte feed-forward.</p>
+
+    <p>Validated against the paper test vector <code>be7f723b4e80a998…</code> first try.</p>
+
+    <h2>clmul64 — the carryless multiply that Metal doesn't have</h2>
+
+    <p>This is the part that <em>seemed</em> hard before we wrote it. <code>verusclhash</code> is built almost entirely around 64×64-bit <strong>carryless multiplication</strong> — multiplying two 64-bit polynomials over GF(2) to produce a 128-bit polynomial. On x86 this is one instruction (<code>_mm_clmulepi64_si128</code>). On ARM it's <code>vmull_p64</code>. On Metal, it doesn't exist as a primitive.</p>
+
+    <p>The CPU reference includes a portable software implementation using the <strong>4-bit window technique</strong>: precompute 16 entries (<code>u[k] = k·b</code> for <code>k</code> in 0..15), then unroll the multiplication as 16 lookups + XORs over windows of <code>a</code>. The total cost is roughly 16 GF doublings + 16 XORs to build the table, then 16 shifted lookups for the multiply, plus a small "repair" pass for high-bit carries.</p>
+
+    <p>This ported cleanly to MSL with one caveat: <code>uint64_t</code> left-shifts past 63 are undefined behavior in MSL just like in C. The loop bounds in the algorithm keep <code>(64 - i)</code> in the range <code>[4, 60]</code>, so we're safe — but the kernel code documents it.</p>
+
+    <p>We validated 1032 (a, b) pairs:</p>
+
+    <ul>
+      <li>8 hand-picked edge cases: <code>(0,0)</code>, <code>(1,1)</code>, <code>(max,max)</code>, <code>(alt,alt)</code>, <code>(lsb,max)</code>, <code>(msb,msb)</code>, and two ascending/descending hex words</li>
+      <li>1024 pseudo-random pairs from <code>xorshift64*</code> (deterministic — failures would be bit-reproducible)</li>
+    </ul>
+
+    <p>All 1032 byte-perfect. The interesting edge cases:</p>
+
+    <ul>
+      <li><code>max × max</code> → <code>0x5555…5555 / 0x5555…5555</code> — alternating bit pattern is a known GF(2) identity for all-ones inputs</li>
+      <li><code>msb × msb</code> → <code>0 / 0x4000…0000</code> — <code>x⁶³ × x⁶³ = x¹²⁶</code>, not <code>x¹²⁷</code>, which is the test you'd accidentally fail if you mixed up GF poly mul with regular integer mul</li>
+    </ul>
+
+    <h2>mulhrs_epi16 and precompReduction64 — the closing primitives</h2>
+
+    <p>Two more pieces to make <code>verusclhash</code> complete:</p>
+
+    <ul>
+      <li><strong><code>mulhrs_epi16</code></strong> — Intel SSSE3's "packed signed 16-bit multiply, high half, rounded". 8-lane SIMD, lane-independent, ~5 lines: <code>r[i] = (int16_t)((a[i] * b[i] + 0x4000) &gt;&gt; 15)</code>. Validated against 517 vectors (5 edge + 512 random).</li>
+      <li><strong><code>precompReduction64</code></strong> — the GF reduction that closes the verusclhash pipeline, taking a 128-bit accumulator down to 64 bits under the polynomial <code>x⁶⁴ + x⁴ + x³ + x + 1</code>. Reuses the same <code>clmul64</code> we already validated, plus a 16-byte lookup table and two XORs. 518 vectors passed.</li>
+    </ul>
+
+    <div class="verdict">
+      <h3>Status of the Metal primitives</h3>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Primitive</th><th>Test vectors</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>haraka256</td><td>4</td><td>✓ byte-perfect</td></tr>
+          <tr><td>haraka512</td><td>4 (incl. paper)</td><td>✓ byte-perfect</td></tr>
+          <tr><td>haraka512_keyed</td><td>9</td><td>✓ byte-perfect</td></tr>
+          <tr><td>clmul64</td><td>1032</td><td>✓ byte-perfect</td></tr>
+          <tr><td>mulhrs_epi16</td><td>517</td><td>✓ byte-perfect</td></tr>
+          <tr><td>precompReduction64</td><td>518</td><td>✓ byte-perfect</td></tr>
+          <tr class="highlight"><td><strong>Total</strong></td><td><strong>~2100</strong></td><td><strong>all pass</strong></td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+
+    <p>Every primitive validated. The remaining work is the <strong>32-iteration selector loop</strong> at the heart of <code>verusclhash</code> that ties them together, plus integration into an actual mining loop. Part 5 covers what happened when we finished that integration — and what the honest performance result taught us about GPUs and mining algorithms.</p>
+
+    <div class="pager">
+      <a class="prev" href="03-cpu-speedup.html">
+        <span class="pager-dir">← Previous</span>
+        <span class="pager-title">The 3.8× speedup hiding in the inner loop</span>
+      </a>
+      <a class="next" href="05-metal-mining.html">
+        <span class="pager-dir">Next →</span>
+        <span class="pager-title">We built the GPU miner. Then we learned why it doesn't matter.</span>
+      </a>
+    </div>
+  </div>
+</article>
+
+<footer>
+  <div class="container">
+    <p>UnminerMac · Verox Studio · MIT licensed · built on a quiet M5</p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
 <title>UnminerMac — Mine unMineable on Apple Silicon (M1–M5)</title>
 <meta name="description" content="Native macOS unMineable client for Apple Silicon. Auto-tuned for M-series P-cores, live coin profitability, no hidden referrals.">
 <link rel="icon" type="image/png" href="logo.png">
@@ -45,7 +46,10 @@
   pre { background: rgba(0,0,0,0.4); padding: 1rem 1.2rem; border-radius: 12px; overflow-x: auto; border: 1px solid rgba(148,163,184,0.15); font-size: 0.85rem; line-height: 1.6; }
   code { background: rgba(148,163,184,0.15); padding: 0.1em 0.4em; border-radius: 5px; font-size: 0.9em; }
 
-  .container { max-width: 980px; margin: 0 auto; padding: 0 1.5rem; }
+  .container { max-width: 980px; margin: 0 auto; padding: 0 1rem; }
+  @media (min-width: 600px) { .container { padding: 0 1.5rem; } }
+  body { overflow-x: hidden; }
+  code { word-break: break-word; }
   .glass {
     background: rgba(20, 28, 48, 0.55);
     backdrop-filter: blur(24px) saturate(180%);
@@ -63,12 +67,19 @@
     background: rgba(11, 16, 32, 0.6);
     border-bottom: 1px solid rgba(255,255,255,0.05);
   }
-  nav .container { display: flex; align-items: center; justify-content: space-between; height: 60px; }
-  nav .brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 600; color: var(--ink); }
-  nav .brand img { width: 28px; height: 28px; border-radius: 7px; }
-  nav .links { display: flex; gap: 1.5rem; font-size: 0.92rem; }
-  nav .links a { color: var(--ink-dim); }
+  nav .container { display: flex; align-items: center; gap: 0.75rem; height: 56px; }
+  nav .brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--ink); flex-shrink: 0; font-size: 0.95rem; }
+  nav .brand img { width: 26px; height: 26px; border-radius: 6px; }
+  nav .links { display: flex; gap: 1rem; font-size: 0.86rem; margin-left: auto; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  nav .links::-webkit-scrollbar { display: none; }
+  nav .links a { color: var(--ink-dim); white-space: nowrap; padding: 0.25rem 0; flex-shrink: 0; }
   nav .links a:hover { color: var(--ink); }
+  @media (min-width: 600px) {
+    nav .container { height: 60px; gap: 1rem; }
+    nav .brand { font-size: 1rem; }
+    nav .brand img { width: 28px; height: 28px; }
+    nav .links { gap: 1.5rem; font-size: 0.92rem; }
+  }
 
   /* === First-mover ribbon === */
   .ribbon {
