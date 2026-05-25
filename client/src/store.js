@@ -7,6 +7,7 @@ const DEFAULT_FORM = {
   address: '',
   referralCode: '',
   cpuUsage: 25,
+  useGPU: false, // verushash only — Metal GPU mining toggle
 }
 
 // Rehydrate the form from localStorage so the user's last-used algorithm,

@@ -21,6 +21,8 @@
     const formData = formSettingsComp.getFormData()
     const data = parseFormData(formData, (v) => {
       v.cpuUsage = Number(v.cpuUsage)
+      // Checkbox: present (value 'on') when checked, absent when unchecked.
+      v.useGPU = v.useGPU === 'on' || v.useGPU === true
       return v
     })
 

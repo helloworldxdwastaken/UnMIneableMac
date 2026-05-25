@@ -103,6 +103,7 @@ func RegisterIPCEvents(w webview.WebView) {
 		Address      string `json:"address"`
 		ReferralCode string `json:"referralCode"`
 		CPUUsage     int    `json:"cpuUsage"`
+		UseGPU       bool   `json:"useGPU"` // verushash only — Metal GPU mining
 	}
 
 	w.Bind("emitStartMining", func(data string) {
@@ -154,9 +155,14 @@ func RegisterIPCEvents(w webview.WebView) {
 			if threads > totalCores {
 				threads = totalCores
 			}
-			process, err := RunCommand(
-				fmt.Sprintf(`%s mine %s %d`, verusPath, addr, threads),
-			)
+			// Build the verusminer command. GPU mode passes --gpu plus the path
+			// to the Metal kernel source (shipped next to the binary in assets/miner/).
+			cmd := fmt.Sprintf(`%s mine %s %d`, verusPath, addr, threads)
+			if form.UseGPU {
+				cmd = fmt.Sprintf(`%s mine %s %d --gpu --gpu-kernel=assets/miner/verus_hash_v2.metal --gpu-batch=8192`,
+					verusPath, addr, threads)
+			}
+			process, err := RunCommand(cmd)
 			if err != nil {
 				w.Eval(fmt.Sprintf(`onMiningStartedError("%s")`, err))
 				return

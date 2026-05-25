@@ -16,6 +16,10 @@ LOCAL_OBJS = haraka_portable.o haraka.o stratum.o
 # Canonical VerusCoin/verushash-node objects (built from canonical/)
 CANON_OBJS = canonical/verus_hash.o canonical/verus_clhash.o canonical/verus_clhash_portable.o
 
+# Metal GPU bridge — Objective-C++ wrapper that lets main.cpp dispatch
+# Metal kernels. Links Metal + Foundation frameworks.
+METAL_OBJ = ../metal/metal_bridge.o
+
 all: verusminer
 
 %.o: %.c
@@ -27,8 +31,12 @@ all: verusminer
 canonical/%.o: canonical/%.cpp
 	$(CXX) $(CXXFLAGS) -I. -Icanonical -c $< -o $@
 
-verusminer: main.o $(LOCAL_OBJS) $(CANON_OBJS)
-	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(LDFLAGS)
+$(METAL_OBJ): ../metal/metal_bridge.mm
+	$(CXX) -O3 -std=c++17 -ObjC++ -fobjc-arc -c $< -o $@
+
+verusminer: main.o $(LOCAL_OBJS) $(CANON_OBJS) $(METAL_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread $(LDFLAGS) \
+	  -framework Metal -framework Foundation
 
 bench: verusminer
 	./verusminer
@@ -37,4 +45,4 @@ quick: verusminer
 	./verusminer quick
 
 clean:
-	rm -f *.o canonical/*.o verusminer verusminer_portable
+	rm -f *.o canonical/*.o ../metal/metal_bridge.o verusminer verusminer_portable
