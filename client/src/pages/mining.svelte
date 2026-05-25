@@ -29,21 +29,36 @@
   $: currentHashrate = $hashrates[$hashrates.length - 1]
   $: isVerus = $form.algorithm === 'verushash'
 
-  // Compute realistic VRSC/day estimate LIVE from network params + current
-  // hashrate. The C++ miner's STATS line uses a stale constant that's ~250×
-  // too high (assumes 136 GH/s network when it's now ~1.34 TH/s). Override
-  // that value here.
-  //
-  // Formula: (your_hashes_per_sec / network_sols) × (86400 / blockTimeSec) × blockReward
-  $: liveVrscPerDay = (() => {
-    if (!isVerus || !currentHashrate || !poolLive?.networkSols) return undefined
-    const yourSols = currentHashrate                    // hashes/sec (== sols/sec for VerusHash)
-    const blocksPerDay = 86400 / (poolLive.blockTimeSec || 60)
-    const yourShare = yourSols / poolLive.networkSols
-    return yourShare * blocksPerDay * (poolLive.blockReward || 3)
+  // VRSC/day — prefer MEASURED values from LuckPool over our calculation:
+  //   1. 7-day rolling average (most accurate, smooths luck variance)
+  //   2. Past-24h actual (noisy but real)
+  //   3. Extrapolation from current hashrate × live network params
+  // The first two are literally what hit your wallet — not an estimate.
+  // The third is only useful in the first few hours before you have history.
+  $: dailyVrsc = (() => {
+    if (!isVerus || !poolLive) return null
+    // Prefer 7d average if available (most reliable)
+    if (poolLive.vrscLast7d > 0) {
+      return { value: poolLive.vrscLast7d / 7, source: '7-day avg from LuckPool', kind: 'measured' }
+    }
+    // Fall back to last-24h actual
+    if (poolLive.vrscLast24h > 0) {
+      return { value: poolLive.vrscLast24h, source: 'past 24h actual', kind: 'measured' }
+    }
+    // Fall back to extrapolation from current hashrate × live network
+    if (currentHashrate && poolLive.networkSols) {
+      const blocksPerDay = 86400 / (poolLive.blockTimeSec || 60)
+      const share = currentHashrate / poolLive.networkSols
+      return {
+        value: share * blocksPerDay * (poolLive.blockReward || 3),
+        source: 'extrapolated from current hashrate',
+        kind: 'estimate',
+      }
+    }
+    return null
   })()
-  $: liveUsdPerDay = (liveVrscPerDay !== undefined && poolLive?.priceUSD)
-    ? liveVrscPerDay * poolLive.priceUSD : undefined
+  $: dailyUsd = (dailyVrsc && poolLive?.priceUSD)
+    ? dailyVrsc.value * poolLive.priceUSD : undefined
 
   miningLogs.subscribe((logs) => {
     dialogLogsData = logs
@@ -244,19 +259,35 @@
           {/if}
         {/if}
 
-        <!-- Estimate from current hashrate × live network params from LuckPool /stats.
-             This OVERRIDES the C++ miner's STATS line vrscPerDay, which uses a
-             stale constant from when the Verus network was ~136 GH/s. -->
-        {#if liveVrscPerDay !== undefined}
+        <!-- "/ day" — prefer MEASURED from LuckPool (your actual past earnings)
+             over our extrapolation. measured is reality, extrapolation is just
+             a formula that ignores variance/luck. -->
+        {#if dailyVrsc}
           <div class="info-chip">
-            <div class="chip-label">Estimated / day · {liveStats.threads || '?'} threads</div>
+            <div class="chip-label">
+              {dailyVrsc.kind === 'measured' ? 'Earning / day' : 'Estimated / day'}
+              <span style="color:var(--ink-faint);font-weight:400;font-size:10px">· {dailyVrsc.source}</span>
+            </div>
             <div class="chip-value mono">
-              {liveVrscPerDay.toFixed(6)} VRSC
-              {#if liveUsdPerDay !== undefined}
+              {dailyVrsc.value.toFixed(6)} VRSC
+              {#if dailyUsd !== undefined}
                 <span style="color:var(--green);font-weight:400">
-                  ≈ ${liveUsdPerDay.toFixed(4)}
+                  ≈ ${dailyUsd.toFixed(4)}
                 </span>
               {/if}
+            </div>
+          </div>
+        {/if}
+        <!-- Pool's view of your hashrate — most accurate (averaged over share
+             submission history, includes whatever the pool counts as effective). -->
+        {#if poolLive?.miner?.hashrate !== undefined && Number(poolLive.miner.hashrate) > 0}
+          <div class="info-chip">
+            <div class="chip-label">Pool-side hashrate <span style="color:var(--green)">● live</span></div>
+            <div class="chip-value mono">
+              {(Number(poolLive.miner.hashrate) / 1e6).toFixed(2)} MH/s
+              <span style="color:var(--ink-dim);font-weight:400;font-size:11px">
+                · in-app: {currentHashrate ? (currentHashrate / 1e6).toFixed(2) : '?'} MH/s
+              </span>
             </div>
           </div>
         {/if}
