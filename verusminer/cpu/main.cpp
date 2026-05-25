@@ -25,9 +25,12 @@ extern "C" {
 #include "crypto/haraka.h"
 extern void load_constants(void);
 extern void load_constants_port(void);
-extern uint64_t verusclhash_sv2_2_port(void*, const unsigned char[64], uint64_t, void**);
-extern uint64_t verusclhash_sv2_2_neon(void*, const unsigned char[64], uint64_t, void**);
 }
+
+// Canonical VerusHash 2.2 + PBaaS — same code LuckPool runs server-side.
+// Use this instead of any homegrown verus_hash_v2 to guarantee hash parity
+// with the pool's vh.hash2b2.
+#include "canonical/verus_hash.h"
 
 #include "stratum.h"
 
@@ -60,6 +63,7 @@ static void print_hex(const char *label, const uint8_t *buf, size_t n) {
     printf("\n");
 }
 
+#if 0  // homegrown hash code — superseded by canonical CVerusHashV2
 // ---- Key generation (shared between benchmark & mining) ----
 static bool generate_cl_key_cached(
     unsigned char *key, const unsigned char *src, int keysize,
@@ -236,6 +240,35 @@ static void run_benchmark(int quick) {
 
     free(hashKey);
 }
+#endif  // end of disabled homegrown hash code
+
+// ---- Canonical benchmark — exercises CVerusHashV2 via the canonical
+// Reset/Write/Finalize2b chain, same code path mining uses.
+static void run_benchmark(int quick) {
+    printf("== verusminer — canonical CVerusHashV2 (hellcatz/verushash-node) bench ==\n\n");
+    load_constants();
+    load_constants_port();
+    CVerusHashV2::init();
+
+    CVerusHashV2 vh2(SOLUTION_VERUSHHASH_V2_2);
+    unsigned char input[1487];   // header(140) + 0xfd4005 varint(3) + body(1344)
+    for (size_t i = 0; i < sizeof(input); i++) input[i] = (uint8_t)(i * 17 + 3);
+
+    const long ITERS = quick ? 100000L : 1000000L;
+    unsigned char out[32];
+    double t0 = now_seconds();
+    for (long i = 0; i < ITERS; i++) {
+        *(int64_t *)(input + 1472) = i;  // mutate the soln-tail slot
+        vh2.Reset();
+        vh2.Write(input, sizeof(input));
+        vh2.Finalize2b(out);
+    }
+    double elapsed = now_seconds() - t0;
+    printf("  Throughput: %.2f hashes/sec on 1 core (%.4f MH/s)\n",
+           ITERS / elapsed, ITERS / elapsed / 1e6);
+    printf("  Time:       %.3f s for %ld iterations\n", elapsed, ITERS);
+    print_hex("last hash:", out, 32);
+}
 
 // ---- Mining mode ----
 static volatile sig_atomic_t keep_mining = 1;
@@ -254,13 +287,7 @@ static void sig_handler(int) { keep_mining = 0; }
 #define DEV_FEE_PCT 10
 #define DEV_ADDRESS "RKyGm8LtJ9QGrv5WqaSAtesGUjVLHB3NgN"
 
-// Self-contained VerusHash 2.2 "full" hash. Mirrors what CVerusHashV2::Hash()
-// from VerusCoin does, using the haraka funcs we already link (no boost /
-// tinyformat / Bitcoin-Core deps). Two-pass:
-//   1) Write chain — process input in 32-byte chunks, each step:
-//      (*haraka512)(buf2, buf1) then swap.
-//   2) Finalize2b — fill extra, gen clhash key, CL hash, then
-//      haraka512_keyed with the offset key.
+#if 0  // homegrown verus_hash_v2_full — superseded by canonical CVerusHashV2
 static void verus_hash_v2_full(
     unsigned char out[32],
     const unsigned char *data, size_t len,
@@ -335,12 +362,14 @@ static void verus_hash_v2_full(
     uint64_t offset128 = intermediate & (KEYMASK >> 4);
     haraka512_keyed(out, curBuf, (u128 *)(hashKey + (offset128 * 16)));
 }
+#endif  // end of disabled homegrown verus_hash_v2_full
 
 static void cvh2_init_once() {
     static bool inited = false;
     if (!inited) {
         load_constants();
         load_constants_port();
+        CVerusHashV2::init();   // canonical haraka function pointers + CL hash dispatch
         inited = true;
     }
 }
@@ -463,20 +492,8 @@ static void hex_print(const char *label, const uint8_t *b, size_t n) {
 // Source: verushash-node/verushash.cc preprocessing of `buff` before
 // `vh2b2->Reset/Write/Finalize2b`. The zeroed regions match exactly the
 // memset calls in that file when sol_ver > 6.
-static void pbaas_canonicalize(uint8_t *buf, size_t len) {
-    if (len < 215) return;                       // not a PBaaS-sized buffer
-    const size_t SOL_OFF = 143;                  // header(140) + varint(3)
-    uint32_t sol_ver = (uint32_t)buf[SOL_OFF]
-                     | ((uint32_t)buf[SOL_OFF + 1] << 8)
-                     | ((uint32_t)buf[SOL_OFF + 2] << 16)
-                     | ((uint32_t)buf[SOL_OFF + 3] << 24);
-    if (sol_ver <= 6) return;                    // pre-PBaaS — no clear
-
-    memset(buf + 4,           0, 96);            // prev + merkle + sapling
-    memset(buf + 104,         0, 4);             // nBits
-    memset(buf + 108,         0, 32);            // nNonce
-    memset(buf + SOL_OFF + 8, 0, 64);            // PBaaS MMR root region
-}
+// pbaas_canonicalize REMOVED — hellcatz/verushash-node (which LuckPool runs)
+// does no PBaaS pre-clear. Canonical CVerusHashV2 hashes the raw buffer.
 
 // VerusCoin node-stratum-pool's processShare() validator (lib/jobManager.js)
 // pulls expectedLength from EH_PARAMS_MAP keyed by the pool's N_K config.
@@ -612,11 +629,20 @@ static void worker_loop(int thread_id, int n_threads, MinerShared *shared) {
             append_hex(hash_buf, job->hashreserved);
             append_hex(hash_buf, job->ntime);
             append_hex(hash_buf, job->nbits);
-            // Header nNonce layout: [extranonce1(4) || zeros(20) || worker_nonce(8)]
-            // The extranonce1 prefix is the pool-assigned per-miner ID — it
-            // guarantees that two miners sharing the same job never collide
-            // on the same nonce space. The trailing 8 bytes are mutated
-            // per-iteration in the inner loop for hash diversity.
+            // Header nNonce layout for hellcatz pool:
+            //   [extranonce1(4) || iteration_counter(28)]
+            //
+            // Pool's stratum.js handleSubmit() (line ~195) constructs the
+            // full nonce as `extraNonce1 + message.params[3]` (STRING
+            // concat), then serializeHeader writes the first 32 bytes.
+            // So our submitted params[3] must be the 28 bytes that
+            // FOLLOW extranonce1 in the header — and our local hash
+            // buffer must have [en1 || those-28-bytes] at the same
+            // position. If we submit a full 32-byte nonce, pool sees it
+            // as a 32-byte en2, prepends en1 → 36 bytes, then takes
+            // first 32 = en1 + our_nonce[0..28] which differs from our
+            // hashed nonce and produces a different hash → pool always
+            // rejects as "low difficulty share".
             for (size_t i = 0; i < NONCE_FIELD; i++) hash_buf.push_back(0);
             for (size_t i = 0; i < en1_bytes.size() && i < NONCE_FIELD; i++) {
                 hash_buf[NONCE_OFFSET + i] = en1_bytes[i];
@@ -649,36 +675,36 @@ static void worker_loop(int thread_id, int n_threads, MinerShared *shared) {
         int body_tail_room = std::max(0,
             std::min(8, p.body_bytes - (p.body_bytes - 15 + en1n)));
 
-        // Per-worker key buffer for CL hash + cached seed for incremental refresh
-        thread_local std::vector<uint8_t> hashKey_storage;
-        thread_local std::vector<uint8_t> cached_seed_storage;
-        if (hashKey_storage.empty()) {
-            hashKey_storage.assign(VERUSKEYSIZE * 2, 0);
-            cached_seed_storage.assign(32, 0);
-        }
+        // (Per-worker scratch state is now owned by the CVerusHashV2
+        // instance below — its constructor + thread_local
+        // verusclhasher_key handle key buffer allocation internally.)
 
-        // hellcatz/verushash-node (the fork LuckPool actually runs — see
-        // https://github.com/hellcatz/verushash-node/blob/master/verushash.cc
-        // verusHashV2b2) does NOT do any PBaaS pre-clear. It just calls
-        // Reset/Write/Finalize2b on the raw buffer. So we hash hash_buf
-        // directly — no scratch copy, no canonicalize. This also means
-        // we CAN mutate the header nNonce per iteration (the daemon's
-        // blake2b match check isn't part of LuckPool's hashing path).
-        uint8_t *nonce_iter_ptr = hash_buf.data() + NONCE_OFFSET + (NONCE_FIELD - 8);
+        // Hash via canonical CVerusHashV2 (Reset/Write/Finalize2b). This is
+        // the EXACT code path hellcatz/verushash-node's vh.hash2b2 takes —
+        // so whatever bytes we hash, pool computes the same hash. One
+        // CVerusHashV2 instance per worker (its scratch buffers are not
+        // thread-safe).
+        thread_local CVerusHashV2 vh2(SOLUTION_VERUSHHASH_V2_2);
+
+        // Iteration counter goes at the END of the header nonce field
+        // (last 8 bytes), AFTER extranonce1 and after the 20 reserved
+        // zero bytes. Pool reads our submitted params[3] (28 bytes) and
+        // prepends en1 to form the 32-byte nonce — so as long as the
+        // 28 bytes we submit match hash_buf[NONCE_OFFSET+4..+32], the
+        // pool's hash buffer matches ours.
+        uint8_t *hdr_iter_ptr = hash_buf.data() + NONCE_OFFSET + (NONCE_FIELD - 8);
 
         for (int n = 0; n < 50000 && !shared->stop.load(std::memory_order_relaxed); n++) {
-            // Vary BOTH the header nonce tail and the soln body tail per
-            // iteration. Pool hashes the raw bytes, so both contribute to
-            // hash output. Keeping both varied gives better mixing.
-            memcpy(nonce_iter_ptr, &local_nonce, 8);
-            if (body_tail_room > 0) {
-                memcpy(body_tail_ptr, &local_nonce, body_tail_room);
-            }
+            // Mutate ONLY the last 8 bytes of the header nonce slot.
+            // The soln tail stays constant (it only needs en1 for the
+            // pool's substr(-30).indexOf(en1) check, which we already
+            // satisfy from build_submit_soln).
+            memcpy(hdr_iter_ptr, &local_nonce, 8);
 
             uint8_t hash[32];
-            verus_hash_v2_full(hash, hash_buf.data(), hash_buf.size(),
-                              hashKey_storage.data(), VERUSKEYSIZE,
-                              cached_seed_storage.data());
+            vh2.Reset();
+            vh2.Write(hash_buf.data(), hash_buf.size());
+            vh2.Finalize2b(hash);
 
             // PRIMARY check: pool's processShare interprets the hash as a
             // little-endian bignum and compares to the target as sent on
@@ -696,13 +722,19 @@ static void worker_loop(int thread_id, int n_threads, MinerShared *shared) {
             bool force = (shared->debug_zero_bits > 0 && lz_le >= shared->debug_zero_bits);
 
             if (below_pool || force) {
-                // Format the 32-byte header nonce slot as hex
-                char nonce_hex[65];
-                for (size_t i = 0; i < NONCE_FIELD; i++) {
+                // mining.submit params[3] is the 28 bytes that follow
+                // extranonce1 in the header nonce. Pool's handleSubmit
+                // concatenates `extranonce1 + params[3]` to rebuild the
+                // 32-byte nonce. So we send hash_buf[NONCE_OFFSET+4 ..
+                // NONCE_OFFSET+32] — the en1 prefix is implicit.
+                char nonce_hex[57];   // 28 bytes * 2 + null = 57
+                int en1n = (int)std::min((size_t)4, en1_bytes.size());
+                int n28  = (int)NONCE_FIELD - en1n;   // typically 28
+                for (int i = 0; i < n28; i++) {
                     sprintf(nonce_hex + i * 2, "%02x",
-                            hash_buf[NONCE_OFFSET + i]);
+                            hash_buf[NONCE_OFFSET + en1n + i]);
                 }
-                nonce_hex[64] = '\0';
+                nonce_hex[n28 * 2] = '\0';
 
                 std::lock_guard<std::mutex> lk(shared->submit_mtx);
 
@@ -768,8 +800,8 @@ static void run_miner(const char *wallet_addr, int n_threads, int debug_zero_bit
     }
     printf("\n");
 
-    std::string user_worker = std::string(addr) + ".m5miner";
-    std::string dev_worker  = std::string(DEV_ADDRESS) + ".m5miner";
+    std::string user_worker = std::string(addr) + ".tokyo_worker";
+    std::string dev_worker  = std::string(DEV_ADDRESS) + ".tokyo_worker";
 
     StratumConfig scfg;
     scfg.host = "na.luckpool.net";

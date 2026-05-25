@@ -1,21 +1,32 @@
-# verusminer/cpu — phase 1 prototype build for Apple Silicon
+# verusminer/cpu — Apple Silicon build, canonical VerusHash 2.2 + PBaaS
+#
+# Hash code (`canonical/`) is the unmodified hellcatz/verushash-node fork
+# that LuckPool actually runs server-side — guarantees our miner-side hash
+# matches the pool's hash by definition.
 
 CXX      = clang++
 CC       = clang
 CFLAGS   = -O3 -march=armv8-a+crypto+sha2+aes -Wall -Wno-deprecated-declarations -I/opt/homebrew/include
-CXXFLAGS = $(CFLAGS) -std=c++17 -Wno-unused-variable
+CXXFLAGS = $(CFLAGS) -std=c++17 -Wno-unused-variable -Wno-shift-op-parentheses -Wno-#warnings -DHAVE_CONFIG_H=0
 
-OBJS = haraka_portable.o haraka.o clhash_portable.o clhash_neon.o stratum.o
+# Local objects (stratum + haraka primitives we share with canonical)
+LOCAL_OBJS = haraka_portable.o haraka.o stratum.o
+
+# Canonical VerusCoin/verushash-node objects (built from canonical/)
+CANON_OBJS = canonical/verus_hash.o canonical/verus_clhash.o canonical/verus_clhash_portable.o
 
 all: verusminer
 
 %.o: %.c
-	$(CC) $(CFLAGS) -I. -c $< -o $@
+	$(CC) $(CFLAGS) -I. -Icanonical -c $< -o $@
 
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) -I. -c $< -o $@
+	$(CXX) $(CXXFLAGS) -I. -Icanonical -c $< -o $@
 
-verusminer: main.o $(OBJS)
+canonical/%.o: canonical/%.cpp
+	$(CXX) $(CXXFLAGS) -I. -Icanonical -c $< -o $@
+
+verusminer: main.o $(LOCAL_OBJS) $(CANON_OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lpthread
 
 bench: verusminer
@@ -25,4 +36,4 @@ quick: verusminer
 	./verusminer quick
 
 clean:
-	rm -f *.o verusminer verusminer_portable
+	rm -f *.o canonical/*.o verusminer verusminer_portable
